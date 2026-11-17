@@ -1,0 +1,88 @@
+:root { color-scheme: dark; --bg:#24262a; --surface:#2d3035; --raised:#33363c; --line:#41454d; --text:#f1f2f4; --muted:#a5aab4; --accent:#a7c7ff; --accent-bg:#294369; --error:#ffb1ac; --ok:#a7d8ba; }
+* { box-sizing:border-box; }
+body { margin:0; font:12px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif; background:var(--bg); color:var(--text); }
+button,input,textarea { font:inherit; }
+button { cursor:pointer; color:inherit; border:1px solid var(--line); border-radius:7px; padding:6px 11px; background:var(--surface); }
+button:hover:not(:disabled) { border-color:var(--accent); }
+button:disabled { opacity:.4; cursor:default; }
+button:focus-visible,input:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+[hidden] { display:none!important; }
+h1,h2,p { margin:0; }
+.visually-hidden { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
+
+/* The app fills the panel: header, settings and footer stay put, the folder list takes the rest. */
+.app { height:100vh; display:flex; flex-direction:column; min-width:300px; }
+.header { display:flex; align-items:center; gap:8px; padding:10px 14px; border-bottom:1px solid var(--line); flex-shrink:0; }
+.app-icon { display:grid; place-items:center; width:24px; height:24px; border-radius:6px; background:var(--accent-bg); color:var(--accent); font-size:15px; }
+h1 { font-size:13px; font-weight:600; white-space:nowrap; }
+.version { color:var(--muted); font-size:10px; }
+.header-tools { margin-left:auto; display:flex; gap:12px; }
+.text-button { color:var(--accent); border:0; background:none; padding:2px 0; }
+.header-tools .text-button { color:var(--muted); font-size:10px; }
+.header-tools .text-button:hover:not(:disabled) { color:var(--accent); }
+
+main { flex:1; min-height:0; display:flex; flex-direction:column; overflow:auto; }
+.targets { flex:1 0 auto; display:flex; flex-direction:column; padding:12px 14px 10px; }
+.hint { color:var(--muted); font-size:10px; }
+#pickHint { margin:6px 0 8px; }
+.read-button { width:100%; padding:7px; background:var(--raised); font-weight:500; }
+
+.segmented { display:flex; padding:2px; border:1px solid var(--line); border-radius:8px; background:var(--surface); min-width:0; }
+.segmented label { flex:1; min-width:0; position:relative; cursor:pointer; }
+.segmented input { position:absolute; opacity:0; pointer-events:none; }
+.segmented span { display:block; text-align:center; padding:4px 6px; border-radius:6px; font-size:11px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.segmented label:hover span { color:var(--text); }
+.segmented input:checked + span { background:var(--accent-bg); color:var(--accent); font-weight:500; }
+.segmented input:focus-visible + span { outline:2px solid var(--accent); outline-offset:1px; }
+.segmented input:disabled + span { opacity:.4; cursor:default; }
+
+.list-head { display:flex; align-items:center; gap:8px; margin:12px 0 5px; font-size:10px; color:var(--muted); }
+.document-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.count { color:var(--text); }
+.list-head .text-button { font-size:10px; }
+/* The list fills whatever height is left and scrolls inside; it never stretches the panel. */
+.list-wrap { flex:1; min-height:84px; position:relative; }
+.target-list { position:absolute; top:0; right:0; bottom:0; left:0; list-style:none; margin:0; padding:0; overflow:auto; border:1px solid var(--line); border-radius:8px; background:rgba(0,0,0,.08); }
+.empty { text-align:center; color:var(--muted); padding:18px 8px; font-size:11px; }
+.empty span { font-size:10px; }
+.target { display:flex; align-items:center; gap:8px; padding:6px 6px 6px 10px; border-bottom:1px solid var(--line); }
+.target:last-child { border-bottom:0; }
+.target:hover { background:var(--surface); }
+.target-symbol { color:var(--accent); font-size:11px; }
+.target-main { min-width:0; flex:1; }
+.target strong { display:block; font-size:12px; font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.target small { display:block; font-size:10px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.remove { border:0; background:none; padding:0 6px; font-size:15px; color:var(--muted); opacity:.6; }
+.target:hover .remove { opacity:1; }
+
+.settings { flex-shrink:0; padding:10px 14px 12px; border-top:1px solid var(--line); background:rgba(0,0,0,.06); }
+.field { display:grid; grid-template-columns:42px minmax(0,1fr); align-items:center; gap:8px; }
+.field-label { color:var(--muted); font-size:11px; }
+.field-hint { margin-left:50px; }
+/* Always two lines tall, whichever option is chosen, so switching never resizes the list. */
+#scopeHint { margin-top:4px; margin-bottom:10px; line-height:15px; height:30px; overflow:hidden; }
+.directory-row { display:flex; gap:6px; min-width:0; }
+.directory-path { flex:1; min-width:0; text-align:left; font-size:11px; padding:5px 9px; color:var(--accent); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.small-button { padding:5px 10px; font-size:11px; flex-shrink:0; }
+.check { display:flex; align-items:flex-start; gap:6px; margin-top:7px; cursor:pointer; font-size:11px; }
+.check input { accent-color:var(--accent); margin:2px 0 0; flex-shrink:0; }
+.check small { display:block; color:var(--muted); font-size:10px; }
+
+footer { flex-shrink:0; padding:10px 14px 12px; border-top:1px solid var(--line); }
+.status strong,.status span { display:block; overflow-wrap:anywhere; }
+.status strong { font-size:11px; font-weight:500; }
+.status span { color:var(--muted); font-size:10px; margin-top:1px; }
+.status[data-kind="error"] strong { color:var(--error); }
+.status[data-kind="ok"] strong { color:var(--ok); }
+.footer-actions { display:flex; gap:8px; margin-top:9px; }
+.primary { flex:1; background:var(--accent); border-color:var(--accent); color:#17243b; font-weight:600; padding:8px 12px; }
+.secondary { padding:8px 12px; }
+progress { display:block; width:100%; height:4px; accent-color:var(--accent); margin-top:8px; }
+.diagnostic-text { display:block; width:100%; height:90px; margin-top:8px; font:10px/1.4 Consolas,Menlo,monospace; color:var(--text); background:var(--surface); border:1px solid var(--line); border-radius:6px; resize:vertical; }
+::-webkit-scrollbar { width:6px; }
+::-webkit-scrollbar-thumb { background:var(--line); border-radius:4px; }
+/* Short panels: drop the secondary hint lines so the list keeps some room. */
+@media (max-height:600px) {
+  #pickHint, .check small { display:none; }
+  .read-button { margin-top:8px; }
+}

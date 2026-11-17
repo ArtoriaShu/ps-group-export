@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+ <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+ <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'">
+ <title>图层组分批导出</title><link rel="stylesheet" href="css/panel.css">
+</head>
+<body>
+ <div class="app">
+  <header class="header">
+   <span class="app-icon" aria-hidden="true">▤</span><h1>图层组分批导出</h1><span class="version">v1.1 · by Shu</span>
+   <div class="header-tools"><button id="copyDiagnostics" class="text-button">复制诊断信息</button><button id="openLogs" class="text-button" hidden>日志</button></div>
+  </header>
+  <main>
+   <section class="targets" aria-labelledby="targetsTitle">
+    <h2 id="targetsTitle" class="visually-hidden">导出内容</h2>
+    <div class="segmented" role="radiogroup" aria-label="读取方式">
+     <label><input type="radio" name="pick" id="pickSelf" value="self" checked><span>选中的文件夹</span></label>
+     <label><input type="radio" name="pick" id="pickChildren" value="children"><span>选中文件夹的子文件夹</span></label>
+    </div>
+    <p id="pickHint" class="hint">在图层面板多选要导出的方案文件夹，每个导出一张。</p>
+    <button id="readSelection" class="read-button">读取选中的文件夹</button>
+    <div class="list-head">
+     <span id="documentName" class="document-name">尚未读取</span>
+     <span id="targetCount" class="count">0 个</span>
+     <button id="clearTargets" class="text-button" disabled>清空</button>
+    </div>
+    <div class="list-wrap"><ul id="targetList" class="target-list" aria-label="待导出的文件夹"><li class="empty">还没有文件夹<br><span>每个文件夹导出为一张 PNG</span></li></ul></div>
+   </section>
+   <section class="settings" aria-label="导出设置">
+    <div class="field">
+     <span class="field-label">范围</span>
+     <div class="segmented" role="radiogroup" aria-label="导出范围">
+      <label><input type="radio" name="scope" id="scopeCanvas" value="canvas" checked><span>整个画布／画板</span></label>
+      <label><input type="radio" name="scope" id="scopeGroup" value="group"><span>按文件夹裁切</span></label>
+     </div>
+    </div>
+    <p id="scopeHint" class="hint field-hint">保留位置和留白；在画板内时按所属画板尺寸。</p>
+    <div class="field">
+     <span class="field-label">保存到</span>
+     <div class="directory-row"><button id="directoryPath" class="directory-path" title="点击选择导出目录">尚未选择目录</button><button id="chooseDirectory" class="small-button">选择</button></div>
+    </div>
+    <label class="check field-hint"><input type="checkbox" id="byParent"><span>按父文件夹分目录保存<small>如“所选目录\B\方案 01.png”，目录不存在时自动创建</small></span></label>
+   </section>
+  </main>
+  <footer>
+   <div id="status" class="status" role="status" aria-live="polite" data-kind="idle"><strong id="statusTitle">从选择文件夹开始</strong><span id="statusDetail">在临时副本中处理，原 PSD 保持不变。同名文件自动编号，不覆盖。</span></div>
+   <progress id="progress" max="1" value="0" hidden aria-label="导出进度"></progress>
+   <textarea id="diagnosticText" class="diagnostic-text" readonly hidden aria-label="诊断信息"></textarea>
+   <div class="footer-actions"><button id="openDirectory" class="secondary" hidden>打开目录</button><button id="export" class="primary" disabled>开始批量导出</button><button id="cancel" class="secondary" hidden>取消</button></div>
+  </footer>
+ </div>
+ <script src="js/panel.js"></script>
+</body>
+</html>
