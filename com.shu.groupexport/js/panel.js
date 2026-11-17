@@ -33,12 +33,12 @@
     catch (e) { deliver(JSON.stringify({ok: false, message: String(e.message || e)})); }
   }
   var PICK_HINT = {
-    self: '在图层面板里直接多选要导出的图层组，每个导出一张。可跨父级、任意层级。',
-    children: '在图层面板里选上一级（可多选），它下面的每个图层组各导出一张。'
+    self: '在图层面板里直接多选要导出的图层或图层组，每个导出一张。可跨父级、任意层级。',
+    children: '在图层面板里选上一级（可多选），它下面的每个图层或图层组各导出一张。'
   };
   var SCOPE_HINT = {
     canvas: '保留位置和留白；在画板内时按所属画板尺寸。',
-    group: '按文件夹自身像素裁切（同原生“导出为”），上层蒙版、效果和公共图层照常合成。'
+    group: '按图层或图层组自身的像素裁切（同原生“导出为”），上层蒙版、效果和公共图层照常合成。'
   };
   function pickMode() { return nodes.pickChildren.checked ? 'children' : 'self'; }
   function persist() {
@@ -63,18 +63,18 @@
     nodes.openDirectory.hidden = !lastDirectory || busy || reading;
     var buttons = nodes.targetList.querySelectorAll('button');
     for (var i = 0; i < buttons.length; i++) { buttons[i].disabled = blocked; }
-    nodes.export.textContent = targets.length ? '导出 ' + targets.length + ' 个文件夹' : '开始批量导出';
+    nodes.export.textContent = targets.length ? '导出 ' + targets.length + ' 个图层' : '开始批量导出';
   }
   function targetList() {
     while (nodes.targetList.firstChild) { nodes.targetList.removeChild(nodes.targetList.firstChild); }
     var targets = loaded ? loaded.targets : [];
     if (!targets.length) {
-      var empty = document.createElement('li'); empty.className = 'empty'; empty.textContent = '还没有文件夹，请先读取 Photoshop 中的选择。'; nodes.targetList.appendChild(empty);
+      var empty = document.createElement('li'); empty.className = 'empty'; empty.textContent = '还没有图层，请先读取 Photoshop 中的选择。'; nodes.targetList.appendChild(empty);
     }
     targets.forEach(function (t) {
       var row = document.createElement('li'), icon = document.createElement('span'), main = document.createElement('div');
       var name = document.createElement('strong'), path = document.createElement('small'), remove = document.createElement('button');
-      row.className = 'target'; icon.className = 'target-symbol'; icon.textContent = '▱'; icon.setAttribute('aria-hidden', 'true'); main.className = 'target-main';
+      row.className = 'target'; icon.className = 'target-symbol'; icon.textContent = t.kind === 'layer' ? '▭' : '▱'; icon.title = t.kind === 'layer' ? '图层' : '图层组'; icon.setAttribute('aria-hidden', 'true'); main.className = 'target-main';
       name.textContent = t.name; name.title = t.name; path.textContent = t.breadcrumb; path.title = t.breadcrumb;
       var folder = nodes.byParent.checked && t.parent && batch && batch.safeName ? batch.safeName(t.parent) + '/' : '';
       if (batch && (folder || batch.fileName(t.name) !== t.name + '.png')) { path.textContent += ' → ' + folder + batch.fileName(t.name); }
@@ -93,8 +93,8 @@
     reading = true; render(); status('working', pickMode() === 'children' ? '正在读取父级下的图层…' : '正在读取选中的图层…', '请稍候。');
     host('GroupExporter.capture(' + quote(pickMode()) + ')', function (r) {
       reading = false;
-      if (r.ok) { logger.info('capture', '读取 ' + r.targets.length + ' 个文件夹（' + (pickMode() === 'children' ? '选父级' : '直接选图层') + '）', {document: r.documentName, token: r.token, targets: r.targets.map(function (t) { return t.breadcrumb; })}); }
-      if (r.ok) { loaded = r; status('idle', '已读取 ' + r.targets.length + ' 个文件夹', '确认清单、导出范围和保存目录后开始导出。'); targetList(); }
+      if (r.ok) { logger.info('capture', '读取 ' + r.targets.length + ' 个图层（' + (pickMode() === 'children' ? '选父级' : '直接选图层') + '）', {document: r.documentName, token: r.token, targets: r.targets.map(function (t) { return t.breadcrumb; })}); }
+      if (r.ok) { loaded = r; status('idle', '已读取 ' + r.targets.length + ' 个图层', '确认清单、导出范围和保存目录后开始导出。'); targetList(); }
       else { status('error', '读取失败', r.message); }
       render();
     });
@@ -131,14 +131,14 @@
         lastResult = {job: id, saved: count, total: result.total, cancelled: result.cancelled, error: error ? error.message : null, seconds: Math.round((Date.now() - started) / 100) / 10};
         if (error) { status('error', '批量导出已停止', detail + ' ' + error.message + ' 如需反馈，请点右下角“复制诊断信息”。'); }
         else if (result.cancelled) { status('idle', '已取消导出', detail + ' 已保存的文件保留，原 PSD 保持不变。'); }
-        else { status('ok', '已导出 ' + count + ' 张 PNG', '文件名与文件夹一致，原 PSD 保持不变。'); }
+        else { status('ok', '已导出 ' + count + ' 张 PNG', '文件名与图层名一致，原 PSD 保持不变。'); }
         render();
       });
     // The runner may fail synchronously (e.g. a deleted output directory).
     if (busy) { job = handle; }
   }
   nodes.readSelection.addEventListener('click', readSelection);
-  nodes.clearTargets.addEventListener('click', function () { if (busy || reading) { return; } loaded = null; targetList(); status('idle', '清单已清空', '在 Photoshop 中选择文件夹后重新读取。'); });
+  nodes.clearTargets.addEventListener('click', function () { if (busy || reading) { return; } loaded = null; targetList(); status('idle', '清单已清空', '在 Photoshop 中选择图层后重新读取。'); });
   nodes.chooseDirectory.addEventListener('click', chooseDirectory); nodes.directoryPath.addEventListener('click', chooseDirectory);
   function panelState() {
     return {version: VERSION, pick: pickMode(), scope: nodes.scopeCanvas.checked ? 'canvas' : 'group', byParent: nodes.byParent.checked, directory: directory,

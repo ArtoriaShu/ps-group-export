@@ -138,11 +138,11 @@ exports.run = function (o, request, callback) {
     });
   }
   try {
-    if (!ids.length) { throw new Error('请先读取需要导出的文件夹。'); }
+    if (!ids.length) { throw new Error('请先读取需要导出的图层。'); }
     if (request.scope !== 'group' && request.scope !== 'canvas') { throw new Error('未知的导出范围。'); }
     if (!fs.statSync(request.directory).isDirectory()) { throw new Error('导出目录不存在。'); }
     directory = fs.mkdtempSync(path.join(o.os.tmpdir(), 'ps-groupexport-'));
-    log.info('batch.start', '开始导出 ' + ids.length + ' 个文件夹', {scope: request.scope, byParent: !!request.byParent, directory: request.directory}, job);
+    log.info('batch.start', '开始导出 ' + ids.length + ' 个图层', {scope: request.scope, byParent: !!request.byParent, directory: request.directory}, job);
     o.host('GroupExporter.validate(' + quote(request.token) + ',' + quote(ids) + ')', function (r) {
       if (!r || !r.ok) { finish(new Error((r && r.message) || '无法确认原始 PSD。')); return; }
       log.debug('validate', '原始 PSD 未改变', undefined, job);

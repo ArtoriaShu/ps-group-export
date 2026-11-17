@@ -41,7 +41,14 @@ function photoshop(options = {}) {
   function decorate(doc, layers) {
     for (const layer of layers) {
       layer.remove = function () { const list = parentOf(doc, this); list.splice(list.indexOf(this), 1); };
-      if (!layer.layers) continue;
+      if (!layer.layers) {
+        layer.duplicate = function () {
+          const list = parentOf(doc, this), copy = JSON.parse(JSON.stringify(this)); copy.id = nextId++; copy.visible = true;
+          decorate(doc, [copy]); list.splice(list.indexOf(this), 0, copy); return copy;
+        };
+        layer.rasterize = function () { merges.push(this.bounds); this.bounds = this.bounds.map(unit); };
+        continue;
+      }
       layer.duplicate = function () {
         if (fail === 'merge') throw new Error('duplicate layer failed');
         const list = parentOf(doc, this), copy = JSON.parse(JSON.stringify(this)); copy.id = nextId++;
@@ -95,7 +102,7 @@ function photoshop(options = {}) {
   function File(p) { this.path = p; this.parent = {exists: true}; Object.defineProperty(this, 'exists', {get: () => files.has(p)}); }
   const ctx = vm.createContext({app, stringIDToTypeID: s => s, charIDToTypeID: s => s, ActionReference, ActionDescriptor,
     executeActionGet, executeAction: () => { throw new Error('no ActionManager edits expected'); },
-    File, UnitValue: function (v, u) { assert.equal(u, 'px'); this.as = () => v; }, PNGSaveOptions: function () {}, Units: {PIXELS: 'PIXELS'},
+    File, UnitValue: function (v, u) { assert.equal(u, 'px'); this.as = () => v; }, PNGSaveOptions: function () {}, Units: {PIXELS: 'PIXELS'}, RasterizeType: {ENTIRELAYER: 'ENTIRELAYER'},
     DialogModes: {NO: 'NO'}, SaveOptions: {DONOTSAVECHANGES: 'NO_SAVE'},
     DocumentMode: {RGB: 'RGB', BITMAP: 'BITMAP', GRAYSCALE: 'GRAYSCALE', MULTICHANNEL: 'MULTICHANNEL', CMYK: 'CMYK'},
     ChangeMode: {RGB: 'RGB', GRAYSCALE: 'GRAYSCALE'}, BitsPerChannelType: {EIGHT: 8, SIXTEEN: 16, THIRTYTWO: 32}, Intent: {RELATIVECOLORIMETRIC: 0}, Extension: {LOWERCASE: 0}});
@@ -150,8 +157,10 @@ test('the other folders\' parent groups are hidden whole, shared ancestors and c
     ]),
     r(4, '公共背景', true)
   ];
-  for (const mode of ['children', undefined]) {
-    const p = photoshop({layers: JSON.parse(JSON.stringify(layers)), selected: mode ? [2, 3] : [11, 12, 13]});
+  const both = photoshop({layers: JSON.parse(JSON.stringify(layers)), selected: [2, 3]}).capture('children');
+  assert.deepEqual(both.targets.map(t => t.id), [11, 12, 31, 13], 'selecting parents reads their plain layers too (C/底图)');
+  for (const mode of [undefined]) {
+    const p = photoshop({layers: JSON.parse(JSON.stringify(layers)), selected: [11, 12, 13]});
     const initial = JSON.stringify(p.source), c = p.capture(mode);
     assert.deepEqual(c.targets.map(t => t.id), [11, 12, 13]);
     assert.equal(p.render(c, 11).ok, true);
@@ -169,12 +178,28 @@ test('the other folders\' parent groups are hidden whole, shared ancestors and c
   }
 });
 
-test('children mode skips plain layers, only takes direct sub-folders, and explains empty or overlapping parents', () => {
+test('plain layers export like folders: others hidden, parent shown, crop by the layer\'s own pixels', () => {
+  const r = (id, name, visible, bounds) => ({id, name, visible, bounds, typename: 'ArtLayer'});
+  const layers = [{id: 2, name: '切图', typename: 'LayerSet', visible: false, layers: [r(21, '按钮', false, [10, 20, 60, 50]), r(22, '图标', true, [100, 100, 132, 132])]}, r(4, '公共背景', true, [0, 0, 800, 600])];
+  const p = photoshop({layers, selected: [2]}), initial = JSON.stringify(p.source), c = p.capture('children');
+  assert.deepEqual(c.targets.map(t => [t.id, t.kind, t.parent]), [[21, 'layer', '切图'], [22, 'layer', '切图']]);
+  const res = p.render(c, 21, 'group'); assert.equal(res.ok, true);
+  assert.deepEqual(p.saves[0].rect, [10, 20, 60, 50]); assert.deepEqual([res.width, res.height], [50, 30]);
+  const scene = p.scene('__groupexport_composite__');
+  assert.deepEqual([scene[0].visible, scene[0].layers[0].visible, scene[0].layers[1].visible, scene[1].visible], [true, true, false, true]);
+  const working = p.docs.find(d => d.name === '__groupexport_work__');
+  assert.equal(working.layers[0].layers.length, 2, 'the measuring copy is removed');
+  const q = photoshop({layers: JSON.parse(JSON.stringify(layers)), selected: [21, 22]}), d = q.capture();
+  assert.deepEqual(d.targets.map(t => t.id), [21, 22], 'plain layers can be selected directly');
+  assertPristine(p, initial); q.release();
+});
+
+test('children mode takes direct children only (folders and plain layers) and explains empty or overlapping parents', () => {
   const c = photoshop({selected: [1]}).capture('children');
   assert.deepEqual(c.targets.map(t => t.id), [2], 'only B, not the folders nested inside it');
-  assert.match(photoshop({selected: [11]}).capture('children').message, /「方案 01」下面没有子文件夹/);
+  assert.deepEqual(photoshop({selected: [11]}).capture('children').targets.map(t => [t.id, t.kind]), [[101, 'layer']], 'plain layers under a parent are read too');
   assert.match(photoshop({selected: [1, 2]}).capture('children').message, /互相包含/);
-  assert.match(photoshop({selected: [4]}).capture('children').message, /普通图层/);
+  assert.match(photoshop({selected: [4]}).capture('children').message, /下面没有可导出的图层/);
   assert.deepEqual(photoshop({selected: [2]}).capture().targets.map(t => t.id), [2], 'self mode is unchanged');
 });
 
@@ -235,10 +260,10 @@ test('nearest artboard supplies its exact viewport; an artboard folder exports t
   q.release();
 });
 
-test('nested ancestor-and-child selection, ordinary layers and an empty selection are rejected', () => {
+test('nested ancestor-and-child selection, an empty selection is rejected; a plain layer is accepted', () => {
   assert.match(photoshop({selected: [1, 11]}).capture().message, /不能同时选择/);
-  assert.match(photoshop({selected: [4]}).capture().message, /「公共背景」是普通图层/);
-  assert.match(photoshop({selected: []}).capture().message, /至少一个文件夹/);
+  assert.deepEqual(photoshop({selected: [4]}).capture().targets.map(t => [t.id, t.kind]), [[4, 'layer']], 'a plain layer is a valid target');
+  assert.match(photoshop({selected: []}).capture().message, /至少一个图层/);
 });
 
 test('source edits and switching documents abort before creating temporary documents', () => {

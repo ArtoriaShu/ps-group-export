@@ -8,7 +8,7 @@
     window.setTimeout(function () {
       var result = {ok:true};
       if (/\.capture\(/.test(script)) result = {ok:true, token:'demo', documentName:'产品主视觉.psd', targets:(/children/.test(script) ? targets.concat([
-        {id:14, name:'图层 04', breadcrumb:'主视觉 / 产品图 / 图层 04'}, {id:15, name:'图层 05', breadcrumb:'主视觉 / 产品图 / 图层 05'}]).filter(function (t) { return /产品图/.test(t.breadcrumb); }) : targets).map(function (t) { return Object.assign({parent: t.breadcrumb.split(' / ').slice(-2)[0]}, t); })};
+        {id:14, kind:'layer', name:'图层 04', breadcrumb:'主视觉 / 产品图 / 图层 04'}, {id:15, kind:'layer', name:'图层 05', breadcrumb:'主视觉 / 产品图 / 图层 05'}]).filter(function (t) { return /产品图/.test(t.breadcrumb); }) : targets).map(function (t) { return Object.assign({parent: t.breadcrumb.split(' / ').slice(-2)[0]}, t); })};
       if (/\.chooseDirectory\(/.test(script)) result = {ok:true, path:'D:\\设计项目\\产品主视觉\\导出'};
       callback(JSON.stringify(result));
     }, 200);

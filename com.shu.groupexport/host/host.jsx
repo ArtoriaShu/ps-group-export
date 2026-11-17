@@ -25,7 +25,7 @@ var GroupExporter = (function () {
         finally { if (old !== null) { try { app.preferences.rulerUnits = old; } catch (ignore2) {} } }
     }
     function active() {
-        if (!app.documents.length) { throw new Error('请先打开 PSD，然后选择需要导出的文件夹。'); }
+        if (!app.documents.length) { throw new Error('请先打开 PSD，然后选择需要导出的图层。'); }
         return app.activeDocument;
     }
     function layerProperty(id, name) {
@@ -57,7 +57,7 @@ var GroupExporter = (function () {
         if (d.hasKey(sid('targetLayersIDs'))) {
             var list = d.getList(sid('targetLayersIDs'));
             for (i = 0; i < list.count; i++) { out.push(list.getReference(i).getIdentifier()); }
-            if (!out.length) { throw new Error('请先在图层面板中选中至少一个文件夹。'); }
+            if (!out.length) { throw new Error('请先在图层面板中选中至少一个图层。'); }
             return out;
         }
         // Very old hosts without targetLayersIDs: only the active layer is known.
@@ -73,6 +73,11 @@ var GroupExporter = (function () {
         if (!d.hasKey(sid('artboardEnabled')) || !d.getBoolean(sid('artboardEnabled'))) { return null; }
         var rect = layerProperty(id, 'artboard').getObjectValue(sid('artboard')).getObjectValue(sid('artboardRect'));
         return [scalar(rect, 'left'), scalar(rect, 'top'), scalar(rect, 'right'), scalar(rect, 'bottom')];
+    }
+    function remainingCheck(ids) {
+        var seen = {}, n = 0;
+        for (var i = 0; i < ids.length; i++) { if (!seen['l' + ids[i]]) { seen['l' + ids[i]] = true; n++; } }
+        return n;
     }
     function contains(a, b) {
         if (a.length >= b.length) { return false; }
@@ -116,49 +121,54 @@ var GroupExporter = (function () {
             try { closeSession(); } catch (ignore) {}
             var children = mode === 'children';
             return withPixels(function () {
-                var doc = active(), ids = selectedIDs(doc), wanted = {}, remaining = 0, found = [], counts = {}, i;
-                // Check the selected IDs directly first: a plain layer is rejected without
-                // walking the tree, and the walk can stop as soon as every folder is found.
+                var doc = active(), ids = selectedIDs(doc), wanted = {}, remaining = 0, plainWanted = 0, found = [], counts = {}, i;
+                // Classify the selected IDs first. Plain (non-group) layers are valid targets
+                // too, but reading every plain layer's ID is slow on big PSDs, so the walk only
+                // does that while a selected plain layer is still unfound.
                 for (i = 0; i < ids.length; i++) {
+                    if (wanted['l' + ids[i]]) { continue; }
                     var section = layerProperty(ids[i], 'layerSection').getEnumerationValue(sid('layerSection'));
-                    if (section !== sid('layerSectionStart')) {
-                        throw new Error('「' + layerProperty(ids[i], 'name').getString(sid('name')) + '」是普通图层。请只选择需要分别导出的文件夹或画板。');
-                    }
-                    if (!wanted['l' + ids[i]]) { wanted['l' + ids[i]] = true; remaining++; }
+                    wanted['l' + ids[i]] = true; remaining++;
+                    if (section !== sid('layerSectionStart')) { plainWanted++; }
                 }
-                // collect: the parent is a selected folder in 'children' mode, so each of
-                // its direct sub-folders becomes a target (the walk must not stop early).
+                function target(id, name, parentName, branch, title, rect, own, kind) {
+                    return {id:id, name:name, kind:kind, parent:parentName, path:branch, breadcrumb:title.join(' / '), rect:rect, board:!!own};
+                }
+                // collect: the parent is selected in 'children' mode, so each of its direct
+                // children (folders and plain layers) becomes a target; the walk must not stop early.
                 function scan(parent, path, names, inheritedRect, top, collect) {
                     for (var j = 0; j < parent.layers.length && (remaining || collect); j++) {
-                        var layer = parent.layers[j];
-                        if (layer.typename !== 'LayerSet') { continue; }
-                        var id = layer.id, name = String(layer.name), branch = path.concat([j]), title = names.concat([name]);
-                        // Artboards are always top-level in Photoshop.
-                        var own = top ? boardRect(id) : null, rect = own || inheritedRect, selected = !!wanted['l' + id];
-                        var parentName = names.length ? names[names.length - 1] : '';
+                        var layer = parent.layers[j], group = layer.typename === 'LayerSet';
+                        if (!group && !collect && !plainWanted) { continue; }
+                        var id = layer.id, selected = !!wanted['l' + id];
+                        if (!group && !collect && !selected) { continue; }
+                        var name = String(layer.name), branch = path.concat([j]), title = names.concat([name]);
+                        // Artboards are always top-level groups in Photoshop.
+                        var own = top && group ? boardRect(id) : null, rect = own || inheritedRect;
+                        var parentName = names.length ? names[names.length - 1] : '', kind = group ? 'group' : 'layer';
                         if (collect) {
-                            found.push({id:id, name:name, parent:parentName, path:branch, breadcrumb:title.join(' / '), rect:rect, board:!!own});
+                            found.push(target(id, name, parentName, branch, title, rect, own, kind));
                             counts['l' + parent.id] = (counts['l' + parent.id] || 0) + 1;
                         }
                         if (selected) {
-                            remaining--;
-                            if (!children) { found.push({id:id, name:name, parent:parentName, path:branch, breadcrumb:title.join(' / '), rect:rect, board:!!own}); }
+                            remaining--; if (!group) { plainWanted--; }
+                            if (!children) { found.push(target(id, name, parentName, branch, title, rect, own, kind)); }
                         }
-                        scan(layer, branch, title, rect, false, children && selected);
+                        if (group) { scan(layer, branch, title, rect, false, children && selected); }
                     }
                 }
                 scan(doc, [], [], null, true, false);
-                if (remaining) { throw new Error('部分选择无法识别。请在图层面板中重新选择文件夹。'); }
+                if (remaining) { throw new Error('部分选择无法识别。请在图层面板中重新选择。'); }
                 if (children) {
                     for (i = 0; i < ids.length; i++) {
-                        if (!counts['l' + ids[i]]) { throw new Error('「' + layerProperty(ids[i], 'name').getString(sid('name')) + '」下面没有子文件夹。请选择图层的上一级，或切换为“直接选图层”。'); }
+                        if (!counts['l' + ids[i]]) { throw new Error('「' + layerProperty(ids[i], 'name').getString(sid('name')) + '」下面没有可导出的图层。请选择图层的上一级，或切换为“直接选图层”。'); }
                     }
-                } else if (found.length !== ids.length) { throw new Error('部分选择无法识别。请在图层面板中重新选择文件夹。'); }
+                } else if (found.length !== remainingCheck(ids)) { throw new Error('部分选择无法识别。请在图层面板中重新选择。'); }
                 for (i = 0; i < found.length; i++) {
                     for (var j = i + 1; j < found.length; j++) {
                         if (contains(found[i].path, found[j].path) || contains(found[j].path, found[i].path)) {
                             throw new Error(children ? '选中的上级文件夹互相包含（「' + found[i].name + '」与「' + found[j].name + '」重叠）。请只选同一层级、互不包含的上级文件夹。'
-                                                     : '不能同时选择一个文件夹及其内部文件夹。请只选需要分别导出的图层。');
+                                                     : '不能同时选择一个图层组及其内部的图层。请只选需要分别导出的那一层。');
                         }
                     }
                 }
@@ -174,26 +184,26 @@ var GroupExporter = (function () {
     }
     function guard(token, ids) {
         var doc = active(), out = [], used = {}, i, j;
-        if (!captured || captured.token !== token || doc.id !== captured.docId) { throw new Error('当前文档或文件夹清单已改变，请重新读取。'); }
+        if (!captured || captured.token !== token || doc.id !== captured.docId) { throw new Error('当前文档或图层清单已改变，请重新读取。'); }
         var rev = revision();
         if ((captured.revision !== null && rev !== captured.revision) ||
             (captured.revision === null && historySignature(doc) !== captured.history) ||
             Math.round(px(doc.width)) !== captured.width || Math.round(px(doc.height)) !== captured.height) {
-            throw new Error('PSD 在读取后已被修改。请重新读取文件夹，再开始导出。');
+            throw new Error('PSD 在读取后已被修改。请重新读取，再开始导出。');
         }
-        if (!ids || !ids.length) { throw new Error('没有待导出的文件夹。'); }
+        if (!ids || !ids.length) { throw new Error('没有待导出的图层。'); }
         // Every captured folder is checked, including ones removed from the panel list:
         // all of them are hidden while another folder is exported.
         for (j = 0; j < captured.targets.length; j++) {
             var t = captured.targets[j], layer = at(doc, t.path);
-            if (!layer || layer.id !== t.id || String(layer.name) !== t.name) { throw new Error('文件夹结构已改变，请重新读取。'); }
+            if (!layer || layer.id !== t.id || String(layer.name) !== t.name) { throw new Error('图层结构已改变，请重新读取。'); }
         }
         for (i = 0; i < ids.length; i++) {
             var target = null;
-            if (used['l' + ids[i]]) { throw new Error('导出清单包含重复文件夹，请重新读取。'); }
+            if (used['l' + ids[i]]) { throw new Error('导出清单包含重复图层，请重新读取。'); }
             used['l' + ids[i]] = true;
             for (j = 0; j < captured.targets.length; j++) { if (captured.targets[j].id === ids[i]) { target = captured.targets[j]; break; } }
-            if (!target) { throw new Error('文件夹不在读取的清单中，请重新读取。'); }
+            if (!target) { throw new Error('图层不在读取的清单中，请重新读取。'); }
             out.push(target);
         }
         return {doc:doc, targets:out, all:captured.targets};
@@ -234,12 +244,17 @@ var GroupExporter = (function () {
     // the folder merged on its own — its visible layers, masks and effects — trimmed
     // to non-transparent pixels. Common layers and other variants never affect it.
     function ownBounds(doc, target) {
-        var group = at(doc, target.path), copy = group.duplicate(), merged = null, b = null, error = null;
-        try { merged = copy.merge(); copy = null; b = merged.bounds; }
-        catch (e) { error = e; }
+        var source = at(doc, target.path), copy = source.duplicate(), merged = null, b = null, error = null;
+        try {
+            if (target.kind === 'layer') {
+                // A plain layer: bake its effects, smart object or text into pixels first.
+                try { copy.rasterize(RasterizeType.ENTIRELAYER); } catch (alreadyPixels) {}
+                b = copy.bounds;
+            } else { merged = copy.merge(); copy = null; b = merged.bounds; }
+        } catch (e) { error = e; }
         // Removal errors propagate: the working copy is then discarded by the caller.
         if (merged) { merged.remove(); } else if (copy) { copy.remove(); }
-        if (error || !b) { throw new Error('「' + target.name + '」没有可见内容，无法裁切导出。请确认内部图层和蒙版。'); }
+        if (error || !b || !(px(b[2]) > px(b[0]) && px(b[3]) > px(b[1]))) { throw new Error('「' + target.name + '」没有可见内容，无法裁切导出。请确认图层内容和蒙版。'); }
         return [Math.floor(px(b[0])), Math.floor(px(b[1])), Math.ceil(px(b[2])), Math.ceil(px(b[3]))];
     }
     function intersect(a, b) { return [Math.max(a[0], b[0]), Math.max(a[1], b[1]), Math.min(a[2], b[2]), Math.min(a[3], b[3])]; }
@@ -266,7 +281,7 @@ var GroupExporter = (function () {
                 var checked = guard(token, ids), target = null, i;
                 original = checked.doc;
                 for (i = 0; i < checked.targets.length; i++) { if (checked.targets[i].id === targetId) { target = checked.targets[i]; break; } }
-                if (!target) { throw new Error('当前文件夹不在导出清单中。'); }
+                if (!target) { throw new Error('当前图层不在导出清单中。'); }
                 checkMode(original);
                 var file = new File(destination);
                 if (!file.parent.exists || file.exists) { throw new Error('临时输出目录不存在，或临时文件已经存在。'); }

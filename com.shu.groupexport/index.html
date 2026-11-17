@@ -18,21 +18,21 @@
      <label><input type="radio" name="pick" id="pickSelf" value="self" checked><span>直接选图层</span></label>
      <label><input type="radio" name="pick" id="pickChildren" value="children"><span>选父级，导出其下图层</span></label>
     </div>
-    <p id="pickHint" class="hint">在图层面板里直接多选要导出的图层组，每个导出一张。可跨父级、任意层级。</p>
+    <p id="pickHint" class="hint">在图层面板里直接多选要导出的图层或图层组，每个导出一张。可跨父级、任意层级。</p>
     <button id="readSelection" class="read-button">读取选中的图层</button>
     <div class="list-head">
      <span id="documentName" class="document-name">尚未读取</span>
      <span id="targetCount" class="count">0 个</span>
      <button id="clearTargets" class="text-button" disabled>清空</button>
     </div>
-    <div class="list-wrap"><ul id="targetList" class="target-list" aria-label="待导出的文件夹"><li class="empty">还没有文件夹<br><span>每个文件夹导出为一张 PNG</span></li></ul></div>
+    <div class="list-wrap"><ul id="targetList" class="target-list" aria-label="待导出的图层"><li class="empty">还没有图层<br><span>每个图层导出为一张 PNG</span></li></ul></div>
    </section>
    <section class="settings" aria-label="导出设置">
     <div class="field">
      <span class="field-label">范围</span>
      <div class="segmented" role="radiogroup" aria-label="导出范围">
       <label><input type="radio" name="scope" id="scopeCanvas" value="canvas" checked><span>整个画布／画板</span></label>
-      <label><input type="radio" name="scope" id="scopeGroup" value="group"><span>按文件夹裁切</span></label>
+      <label><input type="radio" name="scope" id="scopeGroup" value="group"><span>按内容裁切</span></label>
      </div>
     </div>
     <p id="scopeHint" class="hint field-hint">保留位置和留白；在画板内时按所属画板尺寸。</p>
@@ -44,7 +44,7 @@
    </section>
   </main>
   <footer>
-   <div id="status" class="status" role="status" aria-live="polite" data-kind="idle"><strong id="statusTitle">从选择文件夹开始</strong><span id="statusDetail">在临时副本中处理，原 PSD 保持不变。同名文件自动编号，不覆盖。</span></div>
+   <div id="status" class="status" role="status" aria-live="polite" data-kind="idle"><strong id="statusTitle">从选择图层开始</strong><span id="statusDetail">在临时副本中处理，原 PSD 保持不变。同名文件自动编号，不覆盖。</span></div>
    <progress id="progress" max="1" value="0" hidden aria-label="导出进度"></progress>
    <textarea id="diagnosticText" class="diagnostic-text" readonly hidden aria-label="诊断信息"></textarea>
    <div class="footer-actions"><button id="openDirectory" class="secondary" hidden>打开目录</button><button id="export" class="primary" disabled>开始批量导出</button><button id="cancel" class="secondary" hidden>取消</button></div>
