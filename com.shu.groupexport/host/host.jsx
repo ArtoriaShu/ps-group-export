@@ -151,7 +151,7 @@ var GroupExporter = (function () {
                 if (remaining) { throw new Error('部分选择无法识别。请在图层面板中重新选择文件夹。'); }
                 if (children) {
                     for (i = 0; i < ids.length; i++) {
-                        if (!counts['l' + ids[i]]) { throw new Error('「' + layerProperty(ids[i], 'name').getString(sid('name')) + '」下面没有子文件夹。请选择包含方案文件夹的上一级文件夹，或切换为“导出选中的文件夹”。'); }
+                        if (!counts['l' + ids[i]]) { throw new Error('「' + layerProperty(ids[i], 'name').getString(sid('name')) + '」下面没有子文件夹。请选择方案的上一级，或切换为“直接选方案”。'); }
                     }
                 } else if (found.length !== ids.length) { throw new Error('部分选择无法识别。请在图层面板中重新选择文件夹。'); }
                 for (i = 0; i < found.length; i++) {
@@ -174,7 +174,7 @@ var GroupExporter = (function () {
     }
     function guard(token, ids) {
         var doc = active(), out = [], used = {}, i, j;
-        if (!captured || captured.token !== token || doc.id !== captured.docId) { throw new Error('当前文档或文件夹清单已改变，请重新读取选中的文件夹。'); }
+        if (!captured || captured.token !== token || doc.id !== captured.docId) { throw new Error('当前文档或文件夹清单已改变，请重新读取。'); }
         var rev = revision();
         if ((captured.revision !== null && rev !== captured.revision) ||
             (captured.revision === null && historySignature(doc) !== captured.history) ||

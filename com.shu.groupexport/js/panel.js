@@ -33,8 +33,8 @@
     catch (e) { deliver(JSON.stringify({ok: false, message: String(e.message || e)})); }
   }
   var PICK_HINT = {
-    self: '在图层面板多选要导出的方案文件夹，每个导出一张。可跨父组、任意层级。',
-    children: '在图层面板选中上一级文件夹（可多选），它的每个子文件夹各导出一张。'
+    self: '在图层面板里直接多选方案文件夹，每个方案导出一张。可跨父级、任意层级。',
+    children: '在图层面板里选方案的上一级（可多选），它下面的每个方案各导出一张。'
   };
   var SCOPE_HINT = {
     canvas: '保留位置和留白；在画板内时按所属画板尺寸。',
@@ -49,7 +49,7 @@
     nodes.targetCount.textContent = targets.length + ' 个';
     nodes.readSelection.disabled = blocked; nodes.pickSelf.disabled = blocked; nodes.pickChildren.disabled = blocked;
     nodes.pickHint.textContent = PICK_HINT[pickMode()];
-    nodes.readSelection.textContent = pickMode() === 'children' ? '读取子文件夹' : '读取选中的文件夹'; nodes.clearTargets.disabled = blocked || !targets.length;
+    nodes.readSelection.textContent = pickMode() === 'children' ? '读取父级下的方案' : '读取选中的方案'; nodes.clearTargets.disabled = blocked || !targets.length;
     nodes.chooseDirectory.disabled = blocked; nodes.directoryPath.disabled = blocked; nodes.byParent.disabled = blocked;
     nodes.openLogs.hidden = !logger.dir;
     nodes.scopeGroup.disabled = blocked; nodes.scopeCanvas.disabled = blocked;
@@ -90,10 +90,10 @@
   }
   function readSelection() {
     if (busy || reading) { return; }
-    reading = true; render(); status('working', pickMode() === 'children' ? '正在读取子文件夹…' : '正在读取选中的文件夹…', '请稍候。');
+    reading = true; render(); status('working', pickMode() === 'children' ? '正在读取父级下的方案…' : '正在读取选中的方案…', '请稍候。');
     host('GroupExporter.capture(' + quote(pickMode()) + ')', function (r) {
       reading = false;
-      if (r.ok) { logger.info('capture', '读取 ' + r.targets.length + ' 个文件夹（' + (pickMode() === 'children' ? '子文件夹' : '选中的文件夹') + '）', {document: r.documentName, token: r.token, targets: r.targets.map(function (t) { return t.breadcrumb; })}); }
+      if (r.ok) { logger.info('capture', '读取 ' + r.targets.length + ' 个文件夹（' + (pickMode() === 'children' ? '选父级' : '直接选方案') + '）', {document: r.documentName, token: r.token, targets: r.targets.map(function (t) { return t.breadcrumb; })}); }
       if (r.ok) { loaded = r; status('idle', '已读取 ' + r.targets.length + ' 个文件夹', '确认清单、导出范围和保存目录后开始导出。'); targetList(); }
       else { status('error', '读取失败', r.message); }
       render();
