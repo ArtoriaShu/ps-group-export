@@ -151,14 +151,14 @@ var GroupExporter = (function () {
                 if (remaining) { throw new Error('部分选择无法识别。请在图层面板中重新选择文件夹。'); }
                 if (children) {
                     for (i = 0; i < ids.length; i++) {
-                        if (!counts['l' + ids[i]]) { throw new Error('「' + layerProperty(ids[i], 'name').getString(sid('name')) + '」下面没有子文件夹。请选择方案的上一级，或切换为“直接选方案”。'); }
+                        if (!counts['l' + ids[i]]) { throw new Error('「' + layerProperty(ids[i], 'name').getString(sid('name')) + '」下面没有子文件夹。请选择图层的上一级，或切换为“直接选图层”。'); }
                     }
                 } else if (found.length !== ids.length) { throw new Error('部分选择无法识别。请在图层面板中重新选择文件夹。'); }
                 for (i = 0; i < found.length; i++) {
                     for (var j = i + 1; j < found.length; j++) {
                         if (contains(found[i].path, found[j].path) || contains(found[j].path, found[i].path)) {
                             throw new Error(children ? '选中的上级文件夹互相包含（「' + found[i].name + '」与「' + found[j].name + '」重叠）。请只选同一层级、互不包含的上级文件夹。'
-                                                     : '不能同时选择一个文件夹及其内部文件夹。请只选需要分别导出的方案文件夹。');
+                                                     : '不能同时选择一个文件夹及其内部文件夹。请只选需要分别导出的图层。');
                         }
                     }
                 }

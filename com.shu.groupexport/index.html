@@ -15,11 +15,11 @@
    <section class="targets" aria-labelledby="targetsTitle">
     <h2 id="targetsTitle" class="visually-hidden">导出内容</h2>
     <div class="segmented" role="radiogroup" aria-label="读取方式">
-     <label><input type="radio" name="pick" id="pickSelf" value="self" checked><span>直接选方案</span></label>
-     <label><input type="radio" name="pick" id="pickChildren" value="children"><span>选父级，导出其下方案</span></label>
+     <label><input type="radio" name="pick" id="pickSelf" value="self" checked><span>直接选图层</span></label>
+     <label><input type="radio" name="pick" id="pickChildren" value="children"><span>选父级，导出其下图层</span></label>
     </div>
-    <p id="pickHint" class="hint">在图层面板多选要导出的方案文件夹，每个导出一张。</p>
-    <button id="readSelection" class="read-button">读取选中的方案</button>
+    <p id="pickHint" class="hint">在图层面板里直接多选要导出的图层组，每个导出一张。可跨父级、任意层级。</p>
+    <button id="readSelection" class="read-button">读取选中的图层</button>
     <div class="list-head">
      <span id="documentName" class="document-name">尚未读取</span>
      <span id="targetCount" class="count">0 个</span>
@@ -40,7 +40,7 @@
      <span class="field-label">保存到</span>
      <div class="directory-row"><button id="directoryPath" class="directory-path" title="点击选择导出目录">尚未选择目录</button><button id="chooseDirectory" class="small-button">选择</button></div>
     </div>
-    <label class="check field-hint"><input type="checkbox" id="byParent"><span>按父文件夹分目录保存<small>如“所选目录\B\方案 01.png”，目录不存在时自动创建</small></span></label>
+    <label class="check field-hint"><input type="checkbox" id="byParent"><span>按父文件夹分目录保存<small>如“所选目录\B\图层 01.png”，目录不存在时自动创建</small></span></label>
    </section>
   </main>
   <footer>
