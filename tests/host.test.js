@@ -19,7 +19,12 @@ function photoshop(options = {}) {
   ];
   let nextId = 1000, revision = 8, fail = options.fail;
   const events = [], saves = [], files = new Set(), docs = [], merges = [];
-  const app = {documents: docs, activeDocument: null, displayDialogs: 'ALL', preferences: {rulerUnits: options.rulerUnits || 'CM'}};
+  // Custom options live as long as the Photoshop session, across host-script reloads.
+  const customOptions = {};
+  const app = {documents: docs, activeDocument: null, displayDialogs: 'ALL', preferences: {rulerUnits: options.rulerUnits || 'CM'}, customOptions,
+    putCustomOptions(key, d) { customOptions[key] = d; },
+    getCustomOptions(key) { if (!customOptions[key]) throw new Error('no options'); return customOptions[key]; },
+    eraseCustomOptions(key) { delete customOptions[key]; }};
   function flatten(layers) { return layers.flatMap(l => [l, ...(l.layers ? flatten(l.layers) : [])]); }
   function find(id) { return flatten(app.activeDocument.layers).find(l => l.id === id); }
   function bounds(layers) {
@@ -89,6 +94,8 @@ function photoshop(options = {}) {
   ActionReference.prototype.putIdentifier = function (c, id) { this.id = id; };
   ActionReference.prototype.putEnumerated = function (c) { this.type = c; };
   function ActionDescriptor() { this.data = {}; }
+  ActionDescriptor.prototype.putString = function (k, v) { this.data[k] = v; };
+  ActionDescriptor.prototype.getString = function (k) { return this.data[k]; };
   function executeActionGet(ref) {
     if (ref.property === 'targetLayersIDs') return {hasKey: () => true, getList: () => ({count: selected.length, getReference: i => ({getIdentifier: () => selected[i]})})};
     if (ref.cls === 'historyState' || ref.type === 'historyState') return {hasKey: () => !options.noHistoryID, getInteger: () => revision};
@@ -100,13 +107,16 @@ function photoshop(options = {}) {
     throw new Error('Unexpected reference: ' + JSON.stringify(ref));
   }
   function File(p) { this.path = p; this.parent = {exists: true}; Object.defineProperty(this, 'exists', {get: () => files.has(p)}); }
-  const ctx = vm.createContext({app, stringIDToTypeID: s => s, charIDToTypeID: s => s, ActionReference, ActionDescriptor,
+  const globals = () => ({app, stringIDToTypeID: s => s, charIDToTypeID: s => s, ActionReference, ActionDescriptor,
     executeActionGet, executeAction: () => { throw new Error('no ActionManager edits expected'); },
     File, UnitValue: function (v, u) { assert.equal(u, 'px'); this.as = () => v; }, PNGSaveOptions: function () {}, Units: {PIXELS: 'PIXELS'}, RasterizeType: {ENTIRELAYER: 'ENTIRELAYER'},
     DialogModes: {NO: 'NO'}, SaveOptions: {DONOTSAVECHANGES: 'NO_SAVE'},
     DocumentMode: {RGB: 'RGB', BITMAP: 'BITMAP', GRAYSCALE: 'GRAYSCALE', MULTICHANNEL: 'MULTICHANNEL', CMYK: 'CMYK'},
     ChangeMode: {RGB: 'RGB', GRAYSCALE: 'GRAYSCALE'}, BitsPerChannelType: {EIGHT: 8, SIXTEEN: 16, THIRTYTWO: 32}, Intent: {RELATIVECOLORIMETRIC: 0}, Extension: {LOWERCASE: 0}});
+  let ctx = vm.createContext(globals());
   vm.runInContext(script, ctx);
+  // The panel was reloaded: a fresh host-script instance in the same Photoshop session.
+  const reload = () => { ctx = vm.createContext(globals()); vm.runInContext(script, ctx); };
   const invoke = expression => JSON.parse(vm.runInContext(expression, ctx));
   const capture = mode => invoke('GroupExporter.capture(' + (mode ? JSON.stringify(mode) : '') + ')');
   const render = (capture, id = 11, scope = 'canvas', ids = capture.targets.map(t => t.id)) => {
@@ -115,13 +125,14 @@ function photoshop(options = {}) {
   };
   const release = () => invoke('GroupExporter.release()');
   const scene = name => events.filter(e => e.name === name).pop().layers;
-  return {source, app, events, saves, docs, merges, capture, render, release, scene, invoke, edit: () => revision++, fail: value => { fail = value; }};
+  return {reload, source, app, events, saves, docs, merges, capture, render, release, scene, invoke, edit: () => revision++, fail: value => { fail = value; }};
 }
 
 function assertPristine(p, initial) {
   assert.equal(p.release().ok, true);
   assert.equal(p.docs.length, 1); assert.equal(JSON.stringify(p.source), initial);
   assert.equal(p.app.activeDocument, p.source); assert.equal(p.app.displayDialogs, 'ALL'); assert.equal(p.app.preferences.rulerUnits, 'CM');
+  assert.deepEqual(p.app.customOptions, {}, 'no temporary documents left registered');
 }
 
 test('captures nested folders across multiple parents with their exact names and full paths', () => {
@@ -348,16 +359,37 @@ test('P1: two branches under one shared ancestor hide each other but keep the sh
   assertPristine(p, initial);
 });
 
-test('P2: documents left by a closed or reloaded panel are closed on recovery and on the next read', () => {
-  const p = photoshop();
-  // A previous host script instance (now gone) left its documents open.
-  const leave = names => { p.app.preferences.rulerUnits = 'PIXELS'; names.forEach(n => p.source.duplicate(n, n.endsWith('composite__'))); p.app.preferences.rulerUnits = 'CM'; p.app.activeDocument = p.source; };
-  leave(['__groupexport_work__', '__groupexport_composite__']);
-  assert.equal(p.docs.length, 3);
+test('P2: after a panel reload, only temporary documents this plugin registered are closed', () => {
+  const p = photoshop(), c = p.capture();
+  assert.equal(p.render(c, 11).ok, true); // leaves the shared working copy open
+  assert.ok(p.docs.some(d => d.name === '__groupexport_work__'));
+  p.reload(); // the old host script and its session record are gone
   assert.equal(p.release().ok, true, 'start-up recovery');
   assert.deepEqual(p.docs.map(d => d.name), ['示例.psd']); assert.equal(p.app.activeDocument, p.source);
-  leave(['__groupexport_work__']);
-  assert.equal(p.capture().ok, true); assert.deepEqual(p.docs.map(d => d.name), ['示例.psd'], 'a new read also clears leftovers');
+  assert.deepEqual(p.app.customOptions, {}, 'registry emptied');
+});
+
+test('P2 follow-up: a user document that only shares the reserved name is never closed', () => {
+  for (const name of ['__groupexport_work__', '__groupexport_composite__']) {
+    const p = photoshop();
+    p.app.preferences.rulerUnits = 'PIXELS'; const user = p.source.duplicate(name, false); p.app.preferences.rulerUnits = 'CM';
+    user.saved = false; p.app.activeDocument = p.source;
+    assert.equal(p.release().ok, true); assert.ok(p.docs.includes(user), name + ' kept on release');
+    assert.equal(p.capture().ok, true); assert.ok(p.docs.includes(user), name + ' kept on read');
+    p.reload(); assert.equal(p.release().ok, true); assert.ok(p.docs.includes(user), name + ' kept after reload');
+  }
+});
+
+test('P2 follow-up: a source PSD named like a temporary document is never closed, even if once registered', () => {
+  const p = photoshop(); p.source.name = '__groupexport_work__';
+  const c = p.capture(); assert.equal(c.ok, true);
+  assert.equal(p.render(c, 11).ok, true); p.release();
+  assert.ok(p.docs.includes(p.source));
+  // Even a stale registry entry pointing at the active document must not close it.
+  const d = new (function () { this.data = {}; this.getString = k => this.data[k]; })(); d.data.documentIDs = String(p.source.id);
+  p.app.customOptions['com.shu.groupexport.temporaryDocuments'] = d;
+  p.reload(); assert.equal(p.release().ok, true); assert.ok(p.docs.includes(p.source), 'the active document is never closed');
+  assert.equal(p.capture().ok, true); assert.ok(p.docs.includes(p.source));
 });
 
 test('P3: without history IDs the working copy is never reused, so an edit between images is picked up', () => {

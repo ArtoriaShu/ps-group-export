@@ -103,16 +103,43 @@ var GroupExporter = (function () {
         if (!s) { return; }
         var doc = findDocument(s.docId);
         if (doc) { doc.close(SaveOptions.DONOTSAVECHANGES); }
+        disown(s.docId);
+    }
+    // Registry of the temporary documents this plugin created, by document ID. It is
+    // kept in Photoshop's custom options for the Photoshop session (not on disk), so it
+    // survives a panel or host-script reload; document IDs are unique within a session.
+    var REGISTRY = 'com.shu.groupexport.temporaryDocuments';
+    function owned() {
+        try { var text = app.getCustomOptions(REGISTRY).getString(sid('documentIDs')); return text ? text.split(',') : []; }
+        catch (none) { return []; }
+    }
+    function saveOwned(ids) {
+        if (!ids.length) { try { app.eraseCustomOptions(REGISTRY); } catch (none) {} return; }
+        var d = new ActionDescriptor(); d.putString(sid('documentIDs'), ids.join(','));
+        app.putCustomOptions(REGISTRY, d, false);
+    }
+    function own(doc) { var ids = owned(); ids.push(String(doc.id)); saveOwned(ids); return doc; }
+    function disown(id) {
+        var ids = owned(), keep = [];
+        for (var i = 0; i < ids.length; i++) { if (ids[i] !== String(id)) { keep.push(ids[i]); } }
+        saveOwned(keep);
     }
     // Closes temporary documents left behind when the panel was closed or reloaded
-    // mid-batch: the reloaded host script has lost its session record, so they are
-    // found by their reserved names. Never saves them.
+    // mid-batch. A document is closed (never saved) only if this plugin registered it
+    // AND it still has a reserved name; the active document is never touched, so a
+    // user's PSD that merely shares the name is safe.
     function closeLeftovers() {
-        var closed = 0, i, original = app.documents.length ? app.activeDocument : null;
-        for (i = app.documents.length - 1; i >= 0; i--) {
-            var doc = app.documents[i], name = String(doc.name);
-            if (name === WORK_NAME || name === COMPOSITE_NAME) { doc.close(SaveOptions.DONOTSAVECHANGES); closed++; }
+        var ids = owned(), keep = [], closed = 0, i, j, original = app.documents.length ? app.activeDocument : null;
+        if (!ids.length) { return 0; }
+        for (i = 0; i < ids.length; i++) {
+            var doc = null;
+            for (j = 0; j < app.documents.length; j++) { if (String(app.documents[j].id) === ids[i]) { doc = app.documents[j]; break; } }
+            if (!doc) { continue; } // already closed: forget it
+            var name = String(doc.name);
+            if ((name === WORK_NAME || name === COMPOSITE_NAME) && !(original && doc.id === original.id)) { doc.close(SaveOptions.DONOTSAVECHANGES); closed++; }
+            else { keep.push(ids[i]); }
         }
+        saveOwned(keep);
         if (closed && original) { try { app.activeDocument = original; } catch (ignore) {} }
         return closed;
     }
@@ -124,7 +151,7 @@ var GroupExporter = (function () {
             if (existing) { return existing; }
         }
         closeSession();
-        var working = original.duplicate(WORK_NAME, false);
+        var working = own(original.duplicate(WORK_NAME, false));
         session = {token:captured.token, docId:working.id};
         return working;
     }
@@ -312,7 +339,7 @@ var GroupExporter = (function () {
                     }
                     // Composite the whole hierarchy before cropping, so ancestor masks,
                     // group effects, blending and common visible layers are baked together.
-                    composite = working.duplicate(COMPOSITE_NAME, true); lap('composite');
+                    composite = own(working.duplicate(COMPOSITE_NAME, true)); lap('composite');
                 } finally {
                     app.activeDocument = working;
                     restore(changed);
@@ -329,7 +356,7 @@ var GroupExporter = (function () {
             });
         } catch (e) { result = {ok:false, message:message(e), timing:timing, line:e.line || null}; }
         finally {
-            if (composite) { try { composite.close(SaveOptions.DONOTSAVECHANGES); } catch (closeError) { cleanupErrors.push(message(closeError)); } }
+            if (composite) { try { var compositeId = composite.id; composite.close(SaveOptions.DONOTSAVECHANGES); disown(compositeId); } catch (closeError) { cleanupErrors.push(message(closeError)); } }
             if (discard) { try { closeSession(); } catch (sessionError) { cleanupErrors.push(message(sessionError)); } }
             app.displayDialogs = oldDialogs;
             if (original) { try { app.activeDocument = original; } catch (activateError) { cleanupErrors.push(message(activateError)); } }
