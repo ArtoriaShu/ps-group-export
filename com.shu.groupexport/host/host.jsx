@@ -201,12 +201,26 @@ var GroupExporter = (function () {
     function validate(token, ids) { try { return withPixels(function () { guard(token, ids); return json({ok:true}); }); } catch (e) { return failure(e); } }
     // Shows exactly one variant (and its ancestors) and hides every other captured
     // variant. Returns what changed so the shared working copy can be put back.
+    function isPrefix(a, b) {
+        if (a.length > b.length) { return false; }
+        for (var i = 0; i < a.length; i++) { if (a[i] !== b[i]) { return false; } }
+        return true;
+    }
     function showVariant(doc, all, chosen) {
         var changed = [], i, node;
         function set(layer, path, visible) {
             if (layer.visible !== visible) { changed.push({layer:layer, depth:path.length, visible:layer.visible}); layer.visible = visible; }
         }
         for (i = 0; i < all.length; i++) { if (all[i].id !== chosen.id) { set(at(doc, all[i].path), all[i].path, false); } }
+        // The parent group of every other captured folder is hidden as a whole, so
+        // that group's own layers (a background placed beside its variants, say) do
+        // not leak into this image. A parent that is also an ancestor of the chosen
+        // folder stays on, and layers outside all of these parents are untouched.
+        for (i = 0; i < all.length; i++) {
+            var parentPath = all[i].path.slice(0, -1);
+            if (all[i].id === chosen.id || !parentPath.length || isPrefix(parentPath, chosen.path)) { continue; }
+            set(at(doc, parentPath), parentPath, false);
+        }
         node = doc;
         for (i = 0; i < chosen.path.length; i++) { node = node.layers[chosen.path[i]]; set(node, chosen.path.slice(0, i + 1), true); }
         return changed;

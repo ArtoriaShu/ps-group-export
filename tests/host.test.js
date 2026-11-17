@@ -140,6 +140,35 @@ test('children mode turns each selected parent into its direct sub-folders, acro
   p.release();
 });
 
+test('the other folders\' parent groups are hidden whole, shared ancestors and common layers stay', () => {
+  const r = (id, name, visible) => ({id, name, visible, bounds: [0, 0, 10, 10], typename: 'ArtLayer'});
+  const g = (id, name, visible, layers) => ({id, name, visible, layers, typename: 'LayerSet'});
+  const layers = [
+    g(1, 'A', true, [
+      g(2, 'B', true, [g(11, '图层 01', true, [r(101, '图', true)]), g(12, '图层 02', false, [r(102, '图', true)])]),
+      g(3, 'C', true, [r(31, '底图', true), g(13, '图层 03', false, [r(103, '图', true)])])
+    ]),
+    r(4, '公共背景', true)
+  ];
+  for (const mode of ['children', undefined]) {
+    const p = photoshop({layers: JSON.parse(JSON.stringify(layers)), selected: mode ? [2, 3] : [11, 12, 13]});
+    const initial = JSON.stringify(p.source), c = p.capture(mode);
+    assert.deepEqual(c.targets.map(t => t.id), [11, 12, 13]);
+    assert.equal(p.render(c, 11).ok, true);
+    let scene = p.scene('__groupexport_composite__');
+    assert.deepEqual([scene[0].visible, scene[0].layers[0].visible, scene[0].layers[1].visible, scene[1].visible], [true, true, false, true],
+      'exporting B/图层 01: A and B on, C (with its 底图) off, common background on');
+    assert.equal(scene[0].layers[0].layers[1].visible, false, 'the sibling in the same parent is hidden, not the parent');
+    assert.equal(p.render(c, 13).ok, true);
+    scene = p.scene('__groupexport_composite__');
+    assert.deepEqual([scene[0].visible, scene[0].layers[0].visible, scene[0].layers[1].visible, scene[0].layers[1].layers[0].visible, scene[0].layers[1].layers[1].visible],
+      [true, false, true, true, true], 'exporting C/图层 03: B off, C and its 底图 on');
+    const working = p.docs.find(d => d.name === '__groupexport_work__');
+    assert.deepEqual([working.layers[0].layers[0].visible, working.layers[0].layers[1].visible, working.layers[0].layers[1].layers[1].visible], [true, true, false], 'working copy restored');
+    assertPristine(p, initial);
+  }
+});
+
 test('children mode skips plain layers, only takes direct sub-folders, and explains empty or overlapping parents', () => {
   const c = photoshop({selected: [1]}).capture('children');
   assert.deepEqual(c.targets.map(t => t.id), [2], 'only B, not the folders nested inside it');
