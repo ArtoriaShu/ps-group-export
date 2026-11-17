@@ -13,9 +13,15 @@ h1,h2,p { margin:0; }
 /* The app fills the panel: header, settings and footer stay put, the folder list takes the rest. */
 .app { height:100vh; display:flex; flex-direction:column; min-width:300px; }
 .header { display:flex; align-items:center; gap:8px; padding:10px 14px; border-bottom:1px solid var(--line); flex-shrink:0; }
-.app-icon { display:grid; place-items:center; width:24px; height:24px; border-radius:6px; background:var(--accent-bg); color:var(--accent); font-size:15px; }
+/* Logo: three stacked layer planes (layer groups), Shu's "S" on the top one. */
+.app-icon { width:24px; height:24px; flex-shrink:0; overflow:visible; }
+.logo-layer { fill:none; stroke:var(--accent); stroke-width:1.2; stroke-linejoin:round; }
+.logo-low { stroke-opacity:.35; }
+.logo-mid { stroke-opacity:.6; }
+.logo-top { fill:var(--accent-bg); }
+.logo-s { fill:var(--accent); font:italic 700 6px Georgia,"Times New Roman",serif; }
 h1 { font-size:13px; font-weight:600; white-space:nowrap; }
-.version { color:var(--muted); font-size:10px; }
+
 .header-tools { margin-left:auto; display:flex; gap:12px; }
 .text-button { color:var(--accent); border:0; background:none; padding:2px 0; }
 .header-tools .text-button { color:var(--muted); font-size:10px; }
