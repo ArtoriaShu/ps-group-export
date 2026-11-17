@@ -1,7 +1,7 @@
 ﻿/* Photoshop ExtendScript (ES3). Original documents are read only. */
 var GroupExporter = (function () {
     var captured = null, sequence = 0, session = null;
-    var WORK_NAME = '__groupexport_work__';
+    var WORK_NAME = '__groupexport_work__', COMPOSITE_NAME = '__groupexport_composite__';
     function sid(s) { return stringIDToTypeID(s); }
     function quote(s) { return '"' + String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/[\x00-\x1f\u2028\u2029]/g, function (c) { return '\\u' + ('0000' + c.charCodeAt(0).toString(16)).slice(-4); }) + '"'; }
     function json(v) {
@@ -104,8 +104,22 @@ var GroupExporter = (function () {
         var doc = findDocument(s.docId);
         if (doc) { doc.close(SaveOptions.DONOTSAVECHANGES); }
     }
+    // Closes temporary documents left behind when the panel was closed or reloaded
+    // mid-batch: the reloaded host script has lost its session record, so they are
+    // found by their reserved names. Never saves them.
+    function closeLeftovers() {
+        var closed = 0, i, original = app.documents.length ? app.activeDocument : null;
+        for (i = app.documents.length - 1; i >= 0; i--) {
+            var doc = app.documents[i], name = String(doc.name);
+            if (name === WORK_NAME || name === COMPOSITE_NAME) { doc.close(SaveOptions.DONOTSAVECHANGES); closed++; }
+        }
+        if (closed && original) { try { app.activeDocument = original; } catch (ignore) {} }
+        return closed;
+    }
     function workingCopy(original) {
-        if (session && session.token === captured.token) {
+        // Reuse needs a reliable history ID. The fallback signature (history count +
+        // last step name) can miss an edit, so without IDs each image gets a fresh copy.
+        if (session && session.token === captured.token && captured.revision !== null) {
             var existing = findDocument(session.docId);
             if (existing) { return existing; }
         }
@@ -118,7 +132,7 @@ var GroupExporter = (function () {
     // mode 'children': every direct sub-folder of each selected folder is one image.
     function capture(mode) {
         try {
-            try { closeSession(); } catch (ignore) {}
+            try { closeSession(); closeLeftovers(); } catch (ignore) {}
             var children = mode === 'children';
             return withPixels(function () {
                 var doc = active(), ids = selectedIDs(doc), wanted = {}, remaining = 0, plainWanted = 0, found = [], counts = {}, i;
@@ -211,25 +225,22 @@ var GroupExporter = (function () {
     function validate(token, ids) { try { return withPixels(function () { guard(token, ids); return json({ok:true}); }); } catch (e) { return failure(e); } }
     // Shows exactly one variant (and its ancestors) and hides every other captured
     // variant. Returns what changed so the shared working copy can be put back.
-    function isPrefix(a, b) {
-        if (a.length > b.length) { return false; }
-        for (var i = 0; i < a.length; i++) { if (a[i] !== b[i]) { return false; } }
-        return true;
-    }
     function showVariant(doc, all, chosen) {
         var changed = [], i, node;
         function set(layer, path, visible) {
             if (layer.visible !== visible) { changed.push({layer:layer, depth:path.length, visible:layer.visible}); layer.visible = visible; }
         }
         for (i = 0; i < all.length; i++) { if (all[i].id !== chosen.id) { set(at(doc, all[i].path), all[i].path, false); } }
-        // The parent group of every other captured folder is hidden as a whole, so
-        // that group's own layers (a background placed beside its variants, say) do
-        // not leak into this image. A parent that is also an ancestor of the chosen
-        // folder stays on, and layers outside all of these parents are untouched.
+        // Every other captured target's branch is hidden where it forks off the chosen
+        // target's ancestor chain: e.g. exporting C/D/图层 2 hides all of A when another
+        // target is A/B/图层 1, so A's own background or decoration cannot leak in.
+        // Shared ancestors stay on, and layers outside every target branch are untouched.
         for (i = 0; i < all.length; i++) {
-            var parentPath = all[i].path.slice(0, -1);
-            if (all[i].id === chosen.id || !parentPath.length || isPrefix(parentPath, chosen.path)) { continue; }
-            set(at(doc, parentPath), parentPath, false);
+            if (all[i].id === chosen.id) { continue; }
+            var other = all[i].path, k = 0;
+            while (k < other.length && k < chosen.path.length && other[k] === chosen.path[k]) { k++; }
+            var fork = other.slice(0, k + 1);
+            if (fork.length < other.length) { set(at(doc, fork), fork, false); }
         }
         node = doc;
         for (i = 0; i < chosen.path.length; i++) { node = node.layers[chosen.path[i]]; set(node, chosen.path.slice(0, i + 1), true); }
@@ -287,7 +298,7 @@ var GroupExporter = (function () {
                 if (!file.parent.exists || file.exists) { throw new Error('临时输出目录不存在，或临时文件已经存在。'); }
                 app.displayDialogs = DialogModes.NO;
                 discard = true; // until the working copy is back in its pristine state
-                var reused = !!(session && session.token === captured.token && findDocument(session.docId));
+                var reused = !!(session && session.token === captured.token && captured.revision !== null && findDocument(session.docId));
                 var working = workingCopy(original);
                 lap(reused ? 'reuse' : 'duplicate');
                 app.activeDocument = working;
@@ -301,7 +312,7 @@ var GroupExporter = (function () {
                     }
                     // Composite the whole hierarchy before cropping, so ancestor masks,
                     // group effects, blending and common visible layers are baked together.
-                    composite = working.duplicate('__groupexport_composite__', true); lap('composite');
+                    composite = working.duplicate(COMPOSITE_NAME, true); lap('composite');
                 } finally {
                     app.activeDocument = working;
                     restore(changed);
@@ -328,7 +339,7 @@ var GroupExporter = (function () {
     }
     function release() {
         var original = app.documents.length ? app.activeDocument : null;
-        try { closeSession(); }
+        try { closeSession(); closeLeftovers(); }
         catch (e) { return json({ok:false, message:'临时文档 ' + WORK_NAME + ' 未能关闭，请手动关闭（不要保存）。' + message(e)}); }
         finally { if (original) { try { app.activeDocument = original; } catch (ignore) {} } }
         return json({ok:true});

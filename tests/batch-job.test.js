@@ -150,3 +150,13 @@ test('PNG parser rejects missing IEND and accepts a complete PNG', () => {
   assert.deepEqual(job.pngSize(PNG), {width: 1, height: 1});
   assert.throws(() => job.pngSize(PNG.subarray(0, -12)), /不完整/);
 });
+
+test('P2: start-up sweep removes abandoned temp folders after a short grace period, never other folders', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'groupexport-sweep-')); t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const old = path.join(root, 'ps-groupexport-abc123'), fresh = path.join(root, 'ps-groupexport-new999'), other = path.join(root, 'something-else');
+  for (const dir of [old, fresh, other]) { fs.mkdirSync(dir); fs.writeFileSync(path.join(dir, 'item-0.png'), 'x'); }
+  const past = new Date(Date.now() - 5 * 60000); fs.utimesSync(old, past, past); fs.utimesSync(other, past, past);
+  assert.equal(job.sweep(fs, path, {tmpdir: () => root}, 60000), 1);
+  assert.deepEqual(fs.readdirSync(root).sort(), ['ps-groupexport-new999', 'something-else']);
+});
+

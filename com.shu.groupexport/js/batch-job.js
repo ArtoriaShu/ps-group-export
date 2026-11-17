@@ -64,15 +64,18 @@ function removeTemp(fs, path, directory) {
   fs.rmdirSync(directory);
 }
 
-exports.sweep = function (fs, path, os) {
-  var root = os.tmpdir();
+// Removes temp folders of abandoned batches. The panel runs it on start-up, when no
+// batch of this panel can be running, so only a short grace period is needed.
+exports.sweep = function (fs, path, os, maxAge) {
+  var root = os.tmpdir(), limit = Date.now() - (maxAge == null ? 86400000 : maxAge), removed = 0;
   fs.readdirSync(root).forEach(function (name) {
     if (!/^ps-groupexport-[a-zA-Z0-9]+$/.test(name)) { return; }
     try {
       var dir = path.join(root, name), stat = fs.lstatSync(dir);
-      if (stat.isDirectory() && !stat.isSymbolicLink() && stat.mtimeMs < Date.now() - 86400000) { removeTemp(fs, path, dir); }
+      if (stat.isDirectory() && !stat.isSymbolicLink() && stat.mtimeMs < limit) { removeTemp(fs, path, dir); removed++; }
     } catch (ignore) {}
   });
+  return removed;
 };
 
 function quote(v) { return JSON.stringify(v).replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029'); }

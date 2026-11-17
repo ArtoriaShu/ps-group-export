@@ -67,7 +67,7 @@ function photoshop(options = {}) {
   function document(name, layers, width = 800, height = 600) {
     const doc = {id: nextId++, name, layers, width: unit(width), height: unit(height), mode: options.mode || 'RGB', bitsPerChannel: options.bits || 16,
       activeHistoryState: {name: 'snapshot'}, activeLayer: layers[0], saved: true, modes: [],
-      get historyStates() { return {length: revision}; },
+      get historyStates() { return {length: options.fixedHistory ? 50 : revision}; },
       duplicate(name, merged) {
         if (fail === 'duplicate') throw new Error('duplicate failed');
         events.push({name, merged, layers: JSON.parse(JSON.stringify(this.layers))});
@@ -314,3 +314,59 @@ test('invalid scope, token, unknown target, and duplicate IDs are rejected', () 
   assert.equal(p.render(c, 11, 'canvas', [11, 11]).ok, false);
   assert.equal(p.docs.length, 1);
 });
+
+// ---- Review findings (CODE_REVIEW.md, 2026-11-17) ----
+
+const R = (id, name, visible = true, bounds = [0, 0, 10, 10]) => ({id, name, visible, bounds, typename: 'ArtLayer'});
+const G = (id, name, layers, visible = true) => ({id, name, visible, layers, typename: 'LayerSet'});
+const visibleIds = layers => layers.flatMap(l => l.visible ? [l.id, ...(l.layers ? visibleIds(l.layers) : [])] : []);
+
+test('P1: another target nested under a different root hides that whole root, not just its parent', () => {
+  const layers = [G(1, 'A', [G(2, 'B', [G(11, '图层 1', [R(101, '图')])]), R(5, 'A 专属底图')]), G(3, 'C', [G(4, 'D', [G(12, '图层 2', [R(102, '图')])])]), R(9, '公共背景')];
+  const p = photoshop({layers, selected: [11, 12]}), initial = JSON.stringify(p.source), c = p.capture();
+  assert.equal(p.render(c, 12).ok, true);
+  let shown = visibleIds(p.scene('__groupexport_composite__'));
+  assert.ok(!shown.includes(1) && !shown.includes(5), 'A and its own background are hidden while exporting 图层 2');
+  assert.ok(shown.includes(3) && shown.includes(4) && shown.includes(12) && shown.includes(9));
+  assert.equal(p.render(c, 11).ok, true);
+  shown = visibleIds(p.scene('__groupexport_composite__'));
+  assert.ok(shown.includes(5) && !shown.includes(3), 'exporting 图层 1 keeps A 专属底图 and hides C');
+  assertPristine(p, initial);
+});
+
+test('P1: two branches under one shared ancestor hide each other but keep the shared logo', () => {
+  const layers = [G(1, 'A', [R(7, '公共 Logo'), G(2, 'B', [R(21, 'B 装饰'), G(11, '图层 1', [R(101, '图')])]), G(3, 'C', [R(31, 'C 装饰'), G(12, '图层 2', [R(102, '图')])])])];
+  const p = photoshop({layers, selected: [11, 12]}), initial = JSON.stringify(p.source), c = p.capture();
+  assert.equal(p.render(c, 11).ok, true);
+  const first = visibleIds(p.scene('__groupexport_composite__'));
+  assert.deepEqual([first.includes(7), first.includes(21), first.includes(31)], [true, true, false]);
+  assert.equal(p.render(c, 12).ok, true);
+  const second = visibleIds(p.scene('__groupexport_composite__'));
+  assert.deepEqual([second.includes(7), second.includes(21), second.includes(31), second.includes(11)], [true, false, true, false], 'nothing carries over from the previous image');
+  const working = p.docs.find(d => d.name === '__groupexport_work__');
+  assert.deepEqual(visibleIds(working.layers), visibleIds(p.source.layers), 'working copy back to the PSD state');
+  assertPristine(p, initial);
+});
+
+test('P2: documents left by a closed or reloaded panel are closed on recovery and on the next read', () => {
+  const p = photoshop();
+  // A previous host script instance (now gone) left its documents open.
+  const leave = names => { p.app.preferences.rulerUnits = 'PIXELS'; names.forEach(n => p.source.duplicate(n, n.endsWith('composite__'))); p.app.preferences.rulerUnits = 'CM'; p.app.activeDocument = p.source; };
+  leave(['__groupexport_work__', '__groupexport_composite__']);
+  assert.equal(p.docs.length, 3);
+  assert.equal(p.release().ok, true, 'start-up recovery');
+  assert.deepEqual(p.docs.map(d => d.name), ['示例.psd']); assert.equal(p.app.activeDocument, p.source);
+  leave(['__groupexport_work__']);
+  assert.equal(p.capture().ok, true); assert.deepEqual(p.docs.map(d => d.name), ['示例.psd'], 'a new read also clears leftovers');
+});
+
+test('P3: without history IDs the working copy is never reused, so an edit between images is picked up', () => {
+  const p = photoshop({noHistoryID: true, fixedHistory: true}), c = p.capture();
+  assert.equal(p.render(c, 11, 'group').ok, true);
+  p.source.layers[0].layers[0].layers[1].layers[0].bounds = [50, 60, 150, 160]; // pixels change; count and step name do not
+  const r = p.render(c, 12, 'group'); assert.equal(r.ok, true);
+  assert.equal(p.events.filter(e => e.name === '__groupexport_work__').length, 2, 'a fresh working copy for the second image');
+  assert.deepEqual(r.rect, [50, 60, 150, 160], 'the edited content is what gets exported');
+  p.release(); assert.equal(p.docs.length, 1);
+});
+

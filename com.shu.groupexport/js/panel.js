@@ -174,7 +174,9 @@
   nodes.export.addEventListener('click', exportBatch);
   nodes.cancel.addEventListener('click', function () { if (job) { cancelling = true; job.cancel(); render(); } });
   nodes.openDirectory.addEventListener('click', function () { if (busy || reading) { return; } host('GroupExporter.openDirectory(' + quote(lastDirectory) + ')', function (r) { if (!r.ok) { status('error', '无法打开目录', r.message); } }); });
-  window.addEventListener('beforeunload', function () { if (job) { job.cancel(); } });
+  // Best effort only: the page may be gone before Photoshop answers. The reliable
+  // cleanup is the start-up recovery below, which runs the next time the panel opens.
+  window.addEventListener('beforeunload', function () { if (job) { job.cancel(); host('GroupExporter.release()', function () {}); } });
   try {
     var rq = window.cep_node && window.cep_node.require ? window.cep_node.require : window.require;
     if (!rq && typeof require === 'function') { rq = require; }
@@ -191,7 +193,9 @@
       } catch (logError) { logger.warn('logger', '日志文件不可用，仅保存在内存中：' + String(logError.message || logError)); }
       var hostEnv = null; try { hostEnv = JSON.parse(bridge.getHostEnvironment()); } catch (ignore2) {}
       logger.info('panel.start', '面板启动 v' + VERSION, {app: hostEnv && hostEnv.appVersion, os: batch.os.platform() + ' ' + batch.os.release(), logWriteError: logger.writeError()});
-      try { batch.sweep(batch.fs, path, batch.os); } catch (ignore) {}
+      try { var swept = batch.sweep(batch.fs, path, batch.os, 60000); if (swept) { logger.info('temp.sweep', '清理了 ' + swept + ' 个遗留临时目录'); } } catch (ignore) {}
+      // A panel closed or reloaded mid-batch can leave __groupexport_ documents open.
+      host('GroupExporter.release()', function (r) { if (!r || !r.ok) { logger.warn('recover', '遗留临时文档未能关闭', {message: r && r.message}); } });
     } else { status('error', '请在 Photoshop 中打开插件', '安装后，在“窗口 → 扩展功能（旧版）”打开“图层组分批导出”。'); }
     var settings = null;
     try { settings = JSON.parse(window.localStorage.getItem('groupexport-settings-v1') || 'null'); } catch (ignore) {}
