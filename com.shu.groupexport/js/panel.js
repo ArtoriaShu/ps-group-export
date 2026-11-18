@@ -2,7 +2,7 @@
   'use strict';
   var bridge = window.__adobe_cep__, nodes = {}, batch = null, loaded = null, busy = false, reading = false;
   var directory = '', job = null, lastDirectory = '', started = 0, timer = null, cancelling = false;
-  var VERSION = '1.1.0', logger = null, diagnostics = null, jobCount = 0, lastResult = null;
+  var VERSION = '1.2.0', logger = null, diagnostics = null, jobCount = 0, lastResult = null;
   ['pickSelf', 'pickChildren', 'pickHint', 'readSelection', 'clearTargets', 'targetCount', 'documentName', 'targetList', 'scopeGroup', 'scopeCanvas', 'scopeHint',
     'chooseDirectory', 'directoryPath', 'byParent', 'export', 'cancel', 'openDirectory', 'status', 'statusTitle', 'statusDetail', 'progress',
     'copyDiagnostics', 'openLogs', 'diagnosticText'].forEach(function (id) { nodes[id] = document.getElementById(id); });
@@ -42,7 +42,7 @@
   };
   function pickMode() { return nodes.pickChildren.checked ? 'children' : 'self'; }
   function persist() {
-    try { window.localStorage.setItem('groupexport-settings-v1', JSON.stringify({directory: directory, scope: nodes.scopeCanvas.checked ? 'canvas' : 'group', pick: pickMode(), byParent: nodes.byParent.checked})); } catch (ignore) {}
+    try { window.localStorage.setItem('groupexport-settings-v1', JSON.stringify({directory: directory, scope: nodes.scopeCanvas.checked ? 'canvas' : 'group', pickMode: pickMode(), byParent: nodes.byParent.checked})); } catch (ignore) {}
   }
   function render() {
     var targets = loaded ? loaded.targets : [], blocked = busy || reading;
@@ -93,8 +93,11 @@
     reading = true; render(); status('working', pickMode() === 'children' ? '正在读取父级下的图层…' : '正在读取选中的图层…', '请稍候。');
     host('GroupExporter.capture(' + quote(pickMode()) + ')', function (r) {
       reading = false;
-      if (r.ok) { logger.info('capture', '读取 ' + r.targets.length + ' 个图层（' + (pickMode() === 'children' ? '选父级' : '直接选图层') + '）', {document: r.documentName, token: r.token, targets: r.targets.map(function (t) { return t.breadcrumb; })}); }
-      if (r.ok) { loaded = r; status('idle', '已读取 ' + r.targets.length + ' 个图层', '确认清单、导出范围和保存目录后开始导出。'); targetList(); }
+      if (r.ok) { logger.info('capture', '读取 ' + r.targets.length + ' 个图层（' + (pickMode() === 'children' ? '选父级' : '直接选图层') + '）', {document: r.documentName, token: r.token, ignored: r.ignored, scanned: r.scanned, layers: r.layers, targets: r.targets.map(function (t) { return t.breadcrumb; })}); }
+      if (r.ok) {
+        loaded = r; targetList();
+        status('idle', '已读取 ' + r.targets.length + ' 个图层', (r.ignored ? '已忽略 ' + r.ignored + ' 个位于其他选中组内部的图层（按 Shift 连选展开的组时会一并选中）。' : '') + '确认清单、导出范围和保存目录后开始导出。');
+      }
       else { status('error', '读取失败', r.message); }
       render();
     });
@@ -202,7 +205,8 @@
     if (settings) {
       directory = typeof settings.directory === 'string' ? settings.directory : '';
       if (settings.scope === 'canvas' || settings.scope === 'group') { nodes.scopeCanvas.checked = settings.scope === 'canvas'; nodes.scopeGroup.checked = !nodes.scopeCanvas.checked; }
-      nodes.pickChildren.checked = settings.pick === 'children'; nodes.pickSelf.checked = !nodes.pickChildren.checked;
+      // 'pickMode' replaced 'pick' in 1.2.0 so the new default (选父级) applies once to existing installs.
+      nodes.pickSelf.checked = settings.pickMode === 'self'; nodes.pickChildren.checked = !nodes.pickSelf.checked;
       nodes.byParent.checked = settings.byParent === true;
     }
   } catch (e) { status('error', '插件文件加载失败', String(e.message || e)); }

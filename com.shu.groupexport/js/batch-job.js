@@ -80,8 +80,8 @@ exports.sweep = function (fs, path, os, maxAge) {
 
 function quote(v) { return JSON.stringify(v).replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029'); }
 
-// Each synchronous Photoshop render closes its own composite before responding; the
-// shared working copy is closed by release() when the batch ends. Cancellation waits
+// Each synchronous Photoshop render closes its own temporary document before
+// responding; release() sweeps any leftovers when the batch ends. Cancellation waits
 // for the current render callback and skips the final file write.
 // No timeout may start a competing render while Photoshop is still executing.
 exports.run = function (o, request, callback) {
@@ -105,12 +105,12 @@ exports.run = function (o, request, callback) {
       state.phase = 'done'; state.cancelled = cancelled;
       callback(error, {records: records, cancelled: cancelled, total: ids.length});
     }
-    // Photoshop keeps one working copy of the PSD for the whole batch; close it
-    // before reporting, whatever the outcome. Early failures never opened one.
+    // Each render closes its own temporary document; release() is a final sweep for
+    // any left behind, run whatever the outcome. Early failures never opened one.
     if (!rendered) { done(); return; }
     o.host('GroupExporter.release()', function (r) {
       if (!r || !r.ok) { log.error('release', '临时文档未能关闭', {message: r && r.message}, job); }
-      if (!r || !r.ok) { error = new Error((error ? error.message + '；' : '') + ((r && r.message) || '临时文档未能关闭，请手动关闭 __groupexport_work__（不要保存）。')); }
+      if (!r || !r.ok) { error = new Error((error ? error.message + '；' : '') + ((r && r.message) || '临时文档未能关闭，请手动关闭 __groupexport_composite__（不要保存）。')); }
       done();
     });
   }
@@ -126,6 +126,7 @@ exports.run = function (o, request, callback) {
       if (finished) { return; }
       if (result && result.ok) { log.info('render.done', '「' + target.name + '」' + result.width + '×' + result.height + '，用时 ' + (Date.now() - began) + 'ms', {rect: result.rect, timing: result.timing}, job); }
       else { log.error('render.fail', '「' + target.name + '」渲染失败：' + ((result && result.message) || '无返回'), {timing: result && result.timing, line: result && result.line}, job); }
+      if (result && result.ok && result.empty) { log.warn('render.empty', '「' + target.name + '」范围内没有可见像素，导出全透明图片', undefined, job); }
       if (cancelled) { finish(null); return; }
       if (!result || !result.ok) { finish(new Error((result && result.message) || 'Photoshop 没有返回导出结果。')); return; }
       try {

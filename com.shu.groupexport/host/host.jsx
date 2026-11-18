@@ -1,7 +1,8 @@
-﻿/* Photoshop ExtendScript (ES3). Original documents are read only. */
+﻿/* Photoshop ExtendScript (ES3). The original document is never saved; every change made
+   while exporting is put back (visibility explicitly, everything else by history). */
 var GroupExporter = (function () {
-    var captured = null, sequence = 0, session = null;
-    var WORK_NAME = '__groupexport_work__', COMPOSITE_NAME = '__groupexport_composite__';
+    var captured = null, sequence = 0, step = null;
+    var COMPOSITE_NAME = '__groupexport_composite__', LEGACY_WORK_NAME = '__groupexport_work__';
     function sid(s) { return stringIDToTypeID(s); }
     function quote(s) { return '"' + String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/[\x00-\x1f\u2028\u2029]/g, function (c) { return '\\u' + ('0000' + c.charCodeAt(0).toString(16)).slice(-4); }) + '"'; }
     function json(v) {
@@ -28,11 +29,24 @@ var GroupExporter = (function () {
         if (!app.documents.length) { throw new Error('请先打开 PSD，然后选择需要导出的图层。'); }
         return app.activeDocument;
     }
+    // ---- ActionManager reads. They are fast on any PSD size, unlike the DOM layer
+    // tree, and never depend on which groups are expanded in the Layers panel.
+    function docProperty(name) {
+        var r = new ActionReference(); r.putProperty(sid('property'), sid(name));
+        r.putEnumerated(sid('document'), sid('ordinal'), sid('targetEnum'));
+        return executeActionGet(r);
+    }
     function layerProperty(id, name) {
         var r = new ActionReference();
         r.putProperty(sid('property'), sid(name)); r.putIdentifier(sid('layer'), id);
         return executeActionGet(r);
     }
+    function indexProperty(index, name) {
+        var r = new ActionReference();
+        r.putProperty(sid('property'), sid(name)); r.putIndex(sid('layer'), index);
+        return executeActionGet(r);
+    }
+    function hasBackground() { try { return docProperty('hasBackgroundLayer').getBoolean(sid('hasBackgroundLayer')); } catch (e) { return false; } }
     function revision() {
         var r, d;
         try {
@@ -45,23 +59,28 @@ var GroupExporter = (function () {
         } catch (ignore2) {}
         return null;
     }
-    // Fallback when history IDs are unavailable. DOM wrappers are new objects on every
-    // read, so compare values, never object identity.
-    function historySignature(doc) {
-        try { return String(doc.historyStates.length) + '|' + String(doc.activeHistoryState.name); } catch (ignore) { return null; }
-    }
-    function selectedIDs(doc) {
-        var r = new ActionReference(); r.putProperty(sid('property'), sid('targetLayersIDs'));
-        r.putEnumerated(sid('document'), sid('ordinal'), sid('targetEnum'));
-        var d = executeActionGet(r), out = [], i;
-        if (d.hasKey(sid('targetLayersIDs'))) {
-            var list = d.getList(sid('targetLayersIDs'));
-            for (i = 0; i < list.count; i++) { out.push(list.getReference(i).getIdentifier()); }
-            if (!out.length) { throw new Error('请先在图层面板中选中至少一个图层。'); }
-            return out;
-        }
-        // Very old hosts without targetLayersIDs: only the active layer is known.
-        out.push(doc.activeLayer.id);
+    // The layers selected in the Layers panel, as IDs (possibly empty).
+    function currentSelection(doc) {
+        var d, list, out = [], i;
+        try {
+            d = docProperty('targetLayersIDs');
+            if (d.hasKey(sid('targetLayersIDs'))) {
+                list = d.getList(sid('targetLayersIDs'));
+                for (i = 0; i < list.count; i++) { out.push(list.getReference(i).getIdentifier()); }
+                return out;
+            }
+        } catch (ignore) {}
+        try {
+            // Older hosts: targetLayers lists indexes, offset by one without a background.
+            d = docProperty('targetLayers');
+            if (d.hasKey(sid('targetLayers'))) {
+                list = d.getList(sid('targetLayers'));
+                var offset = hasBackground() ? 0 : 1;
+                for (i = 0; i < list.count; i++) { out.push(indexProperty(list.getReference(i).getIndex() + offset, 'layerID').getInteger(sid('layerID'))); }
+                return out;
+            }
+        } catch (ignore2) {}
+        try { out.push(doc.activeLayer.id); } catch (ignore3) {}
         return out;
     }
     function px(v) { return typeof v === 'number' ? v : v.as('px'); }
@@ -73,11 +92,6 @@ var GroupExporter = (function () {
         if (!d.hasKey(sid('artboardEnabled')) || !d.getBoolean(sid('artboardEnabled'))) { return null; }
         var rect = layerProperty(id, 'artboard').getObjectValue(sid('artboard')).getObjectValue(sid('artboardRect'));
         return [scalar(rect, 'left'), scalar(rect, 'top'), scalar(rect, 'right'), scalar(rect, 'bottom')];
-    }
-    function remainingCheck(ids) {
-        var seen = {}, n = 0;
-        for (var i = 0; i < ids.length; i++) { if (!seen['l' + ids[i]]) { seen['l' + ids[i]] = true; n++; } }
-        return n;
     }
     function contains(a, b) {
         if (a.length >= b.length) { return false; }
@@ -91,19 +105,6 @@ var GroupExporter = (function () {
             node = node.layers[path[i]];
         }
         return node;
-    }
-    function findDocument(id) {
-        for (var i = 0; i < app.documents.length; i++) { if (app.documents[i].id === id) { return app.documents[i]; } }
-        return null;
-    }
-    // The working copy lives for one batch, so the PSD is duplicated once per batch
-    // instead of once per image. It is closed by release(), a new capture, or any error.
-    function closeSession() {
-        var s = session; session = null;
-        if (!s) { return; }
-        var doc = findDocument(s.docId);
-        if (doc) { doc.close(SaveOptions.DONOTSAVECHANGES); }
-        disown(s.docId);
     }
     // Registry of the temporary documents this plugin created, by document ID. It is
     // kept in Photoshop's custom options for the Photoshop session (not on disk), so it
@@ -125,7 +126,7 @@ var GroupExporter = (function () {
         saveOwned(keep);
     }
     // Closes temporary documents left behind when the panel was closed or reloaded
-    // mid-batch. A document is closed (never saved) only if this plugin registered it
+    // mid-export. A document is closed (never saved) only if this plugin registered it
     // AND it still has a reserved name; the active document is never touched, so a
     // user's PSD that merely shares the name is safe.
     function closeLeftovers() {
@@ -136,80 +137,83 @@ var GroupExporter = (function () {
             for (j = 0; j < app.documents.length; j++) { if (String(app.documents[j].id) === ids[i]) { doc = app.documents[j]; break; } }
             if (!doc) { continue; } // already closed: forget it
             var name = String(doc.name);
-            if ((name === WORK_NAME || name === COMPOSITE_NAME) && !(original && doc.id === original.id)) { doc.close(SaveOptions.DONOTSAVECHANGES); closed++; }
+            if ((name === COMPOSITE_NAME || name === LEGACY_WORK_NAME) && !(original && doc.id === original.id)) { doc.close(SaveOptions.DONOTSAVECHANGES); closed++; }
             else { keep.push(ids[i]); }
         }
         saveOwned(keep);
         if (closed && original) { try { app.activeDocument = original; } catch (ignore) {} }
         return closed;
     }
-    function workingCopy(original) {
-        // Reuse needs a reliable history ID. The fallback signature (history count +
-        // last step name) can miss an edit, so without IDs each image gets a fresh copy.
-        if (session && session.token === captured.token && captured.revision !== null) {
-            var existing = findDocument(session.docId);
-            if (existing) { return existing; }
-        }
-        closeSession();
-        var working = own(original.duplicate(WORK_NAME, false));
-        session = {token:captured.token, docId:working.id};
-        return working;
-    }
-    // mode 'self': every selected folder is one image.
-    // mode 'children': every direct sub-folder of each selected folder is one image.
+    // mode 'self': every selected layer or group is one image.
+    // mode 'children': every direct child of each selected group is one image.
+    // One top-down pass over the flat ActionManager layer list (group start, its
+    // children, then an end marker), reading only what is needed and stopping as soon
+    // as every selected layer and every selected parent's children have been seen.
     function capture(mode) {
         try {
-            try { closeSession(); closeLeftovers(); } catch (ignore) {}
+            try { closeLeftovers(); } catch (ignore) {}
             var children = mode === 'children';
             return withPixels(function () {
-                var doc = active(), ids = selectedIDs(doc), wanted = {}, remaining = 0, plainWanted = 0, found = [], counts = {}, i;
-                // Classify the selected IDs first. Plain (non-group) layers are valid targets
-                // too, but reading every plain layer's ID is slow on big PSDs, so the walk only
-                // does that while a selected plain layer is still unfound.
+                var doc = active(), ids = currentSelection(doc), wanted = {}, remaining = 0, plainWanted = 0, i, j;
+                if (!ids.length) { throw new Error('请先在图层面板中选中至少一个图层。'); }
+                var START = sid('layerSectionStart'), END = sid('layerSectionEnd');
                 for (i = 0; i < ids.length; i++) {
                     if (wanted['l' + ids[i]]) { continue; }
-                    var section = layerProperty(ids[i], 'layerSection').getEnumerationValue(sid('layerSection'));
+                    var section = null;
+                    try { section = layerProperty(ids[i], 'layerSection').getEnumerationValue(sid('layerSection')); } catch (unknownLayer) {}
                     wanted['l' + ids[i]] = true; remaining++;
-                    if (section !== sid('layerSectionStart')) { plainWanted++; }
+                    if (section !== START) { plainWanted++; }
                 }
-                function target(id, name, parentName, branch, title, rect, own, kind) {
-                    return {id:id, name:name, kind:kind, parent:parentName, path:branch, breadcrumb:title.join(' / '), rect:rect, board:!!own};
+                var count = docProperty('numberOfLayers').getInteger(sid('numberOfLayers')), bottom = hasBackground() ? 0 : 1;
+                var stack = [{id:null, path:[], names:[], chain:[], rect:null, counter:0, collect:false}], collecting = 0;
+                var picked = [], collected = [], counts = {};
+                function target(id, name, frame, branch, chain, rect, board, kind) {
+                    return {id:id, name:name, kind:kind, parent:frame.names.length ? frame.names[frame.names.length - 1] : '', parentId:frame.id,
+                        path:branch, chain:chain, breadcrumb:frame.names.concat([name]).join(' / '), rect:rect, board:!!board};
                 }
-                // collect: the parent is selected in 'children' mode, so each of its direct
-                // children (folders and plain layers) becomes a target; the walk must not stop early.
-                function scan(parent, path, names, inheritedRect, top, collect) {
-                    for (var j = 0; j < parent.layers.length && (remaining || collect); j++) {
-                        var layer = parent.layers[j], group = layer.typename === 'LayerSet';
-                        if (!group && !collect && !plainWanted) { continue; }
-                        var id = layer.id, selected = !!wanted['l' + id];
-                        if (!group && !collect && !selected) { continue; }
-                        var name = String(layer.name), branch = path.concat([j]), title = names.concat([name]);
-                        // Artboards are always top-level groups in Photoshop.
-                        var own = top && group ? boardRect(id) : null, rect = own || inheritedRect;
-                        var parentName = names.length ? names[names.length - 1] : '', kind = group ? 'group' : 'layer';
-                        if (collect) {
-                            found.push(target(id, name, parentName, branch, title, rect, own, kind));
-                            counts['l' + parent.id] = (counts['l' + parent.id] || 0) + 1;
-                        }
-                        if (selected) {
-                            remaining--; if (!group) { plainWanted--; }
-                            if (!children) { found.push(target(id, name, parentName, branch, title, rect, own, kind)); }
-                        }
-                        if (group) { scan(layer, branch, title, rect, false, children && selected); }
+                for (i = count; i >= bottom && (remaining || collecting); i--) {
+                    var top = stack[stack.length - 1];
+                    var kindOf = indexProperty(i, 'layerSection').getEnumerationValue(sid('layerSection'));
+                    if (kindOf === END) { if (top.collect) { collecting--; } if (stack.length > 1) { stack.pop(); } continue; }
+                    var group = kindOf === START, position = top.counter++;
+                    // Plain layers matter only when collected under a selected parent or selected themselves.
+                    if (!group && !top.collect && !plainWanted) { continue; }
+                    var id = indexProperty(i, 'layerID').getInteger(sid('layerID')), selected = !!wanted['l' + id];
+                    if (!group && !top.collect && !selected) { continue; }
+                    var name = String(indexProperty(i, 'name').getString(sid('name')));
+                    var branch = top.path.concat([position]), chain = top.chain.concat([id]);
+                    // Artboards are always top-level groups in Photoshop.
+                    var board = stack.length === 1 && group ? boardRect(id) : null, rect = board || top.rect;
+                    if (top.collect) { collected.push(target(id, name, top, branch, chain, rect, board, group ? 'group' : 'layer')); counts['l' + top.id] = (counts['l' + top.id] || 0) + 1; }
+                    if (selected) { remaining--; if (!group) { plainWanted--; } picked.push(target(id, name, top, branch, chain, rect, board, group ? 'group' : 'layer')); }
+                    if (group) {
+                        var frame = {id:id, path:branch, names:top.names.concat([name]), chain:chain, rect:rect, counter:0, collect:children && selected};
+                        if (frame.collect) { collecting++; }
+                        stack.push(frame);
                     }
                 }
-                scan(doc, [], [], null, true, false);
-                if (remaining) { throw new Error('部分选择无法识别。请在图层面板中重新选择。'); }
+                if (remaining) { throw new Error('有 ' + remaining + ' 个选中的图层没有在图层列表中找到。请在图层面板中重新选择后再读取。'); }
+                // A selection inside another selected group is ignored: Shift-selecting a
+                // range of expanded folders also selects the layers inside them.
+                var isPicked = {}, ignored = {}, ignoredCount = 0;
+                for (i = 0; i < picked.length; i++) { isPicked['l' + picked[i].id] = true; }
+                for (i = 0; i < picked.length; i++) {
+                    for (j = 0; j < picked[i].chain.length - 1; j++) { if (isPicked['l' + picked[i].chain[j]]) { ignored['l' + picked[i].id] = true; ignoredCount++; break; } }
+                }
+                var found = [];
                 if (children) {
-                    for (i = 0; i < ids.length; i++) {
-                        if (!counts['l' + ids[i]]) { throw new Error('「' + layerProperty(ids[i], 'name').getString(sid('name')) + '」下面没有可导出的图层。请选择图层的上一级，或切换为“直接选图层”。'); }
+                    for (i = 0; i < picked.length; i++) {
+                        if (ignored['l' + picked[i].id]) { continue; }
+                        if (!counts['l' + picked[i].id]) { throw new Error('「' + picked[i].name + '」下面没有可导出的图层。请选择图层的上一级，或切换为“直接选图层”。'); }
                     }
-                } else if (found.length !== remainingCheck(ids)) { throw new Error('部分选择无法识别。请在图层面板中重新选择。'); }
+                    for (i = 0; i < collected.length; i++) { if (!ignored['l' + collected[i].parentId]) { found.push(collected[i]); } }
+                } else {
+                    for (i = 0; i < picked.length; i++) { if (!ignored['l' + picked[i].id]) { found.push(picked[i]); } }
+                }
                 for (i = 0; i < found.length; i++) {
-                    for (var j = i + 1; j < found.length; j++) {
+                    for (j = i + 1; j < found.length; j++) {
                         if (contains(found[i].path, found[j].path) || contains(found[j].path, found[i].path)) {
-                            throw new Error(children ? '选中的上级文件夹互相包含（「' + found[i].name + '」与「' + found[j].name + '」重叠）。请只选同一层级、互不包含的上级文件夹。'
-                                                     : '不能同时选择一个图层组及其内部的图层。请只选需要分别导出的那一层。');
+                            throw new Error('「' + found[i].name + '」与「' + found[j].name + '」互相包含，无法分别导出。请只选同一层级的图层。');
                         }
                     }
                 }
@@ -217,27 +221,27 @@ var GroupExporter = (function () {
                     for (var k = 0; k < a.path.length && k < b.path.length; k++) { if (a.path[k] !== b.path[k]) { return a.path[k] - b.path[k]; } }
                     return a.path.length - b.path.length;
                 });
-                captured = {token:String(doc.id) + '-' + (++sequence), docId:doc.id, revision:revision(), history:historySignature(doc),
+                captured = {token:String(doc.id) + '-' + (++sequence), docId:doc.id, revision:revision(),
                     width:Math.round(px(doc.width)), height:Math.round(px(doc.height)), targets:found};
-                return json({ok:true, token:captured.token, docId:doc.id, documentName:String(doc.name), targets:found});
+                return json({ok:true, token:captured.token, docId:doc.id, documentName:String(doc.name), targets:found, ignored:ignoredCount,
+                    scanned:count - i, layers:count});
             });
         } catch (e) { return failure(e); }
     }
     function guard(token, ids) {
         var doc = active(), out = [], used = {}, i, j;
         if (!captured || captured.token !== token || doc.id !== captured.docId) { throw new Error('当前文档或图层清单已改变，请重新读取。'); }
-        var rev = revision();
-        if ((captured.revision !== null && rev !== captured.revision) ||
-            (captured.revision === null && historySignature(doc) !== captured.history) ||
+        if ((captured.revision !== null && revision() !== captured.revision) ||
             Math.round(px(doc.width)) !== captured.width || Math.round(px(doc.height)) !== captured.height) {
             throw new Error('PSD 在读取后已被修改。请重新读取，再开始导出。');
         }
         if (!ids || !ids.length) { throw new Error('没有待导出的图层。'); }
-        // Every captured folder is checked, including ones removed from the panel list:
-        // all of them are hidden while another folder is exported.
+        // Every captured layer is checked by ID, including ones removed from the panel
+        // list: all of them are hidden while another one is exported.
         for (j = 0; j < captured.targets.length; j++) {
-            var t = captured.targets[j], layer = at(doc, t.path);
-            if (!layer || layer.id !== t.id || String(layer.name) !== t.name) { throw new Error('图层结构已改变，请重新读取。'); }
+            var t = captured.targets[j], name = null;
+            try { name = String(layerProperty(t.id, 'name').getString(sid('name'))); } catch (missing) {}
+            if (name !== t.name) { throw new Error('图层结构已改变，请重新读取。'); }
         }
         for (i = 0; i < ids.length; i++) {
             var target = null;
@@ -250,39 +254,45 @@ var GroupExporter = (function () {
         return {doc:doc, targets:out, all:captured.targets};
     }
     function validate(token, ids) { try { return withPixels(function () { guard(token, ids); return json({ok:true}); }); } catch (e) { return failure(e); } }
-    // Shows exactly one variant (and its ancestors) and hides every other captured
-    // variant. Returns what changed so the shared working copy can be put back.
-    function showVariant(doc, all, chosen) {
-        var changed = [], i, node;
-        function set(layer, path, visible) {
-            if (layer.visible !== visible) { changed.push({layer:layer, depth:path.length, visible:layer.visible}); layer.visible = visible; }
+    // Show or hide many layers in one ActionManager call each.
+    function setVisible(list, visible) {
+        if (!list.length) { return; }
+        var refs = new ActionList(), d = new ActionDescriptor();
+        for (var i = 0; i < list.length; i++) { var r = new ActionReference(); r.putIdentifier(sid('layer'), list[i]); refs.putReference(r); }
+        d.putList(sid('null'), refs);
+        executeAction(sid(visible ? 'show' : 'hide'), d, DialogModes.NO);
+    }
+    function isVisible(id) { return layerProperty(id, 'visible').getBoolean(sid('visible')); }
+    // Shows exactly one target (and its ancestors) and hides every other captured
+    // target. Every other target's branch is hidden where it forks off the chosen
+    // target's ancestor chain: exporting C/D/图层 2 hides all of A when another target
+    // is A/B/图层 1, so A's own background cannot leak in. Shared ancestors stay on and
+    // layers outside every target branch keep their state. Returns the undo lists.
+    function showVariant(all, chosen) {
+        var hide = [], show = [], seen = {}, i, k;
+        function want(id, visible) {
+            if (seen['l' + id]) { return; } seen['l' + id] = true;
+            if (isVisible(id) !== visible) { (visible ? show : hide).push(id); }
         }
-        for (i = 0; i < all.length; i++) { if (all[i].id !== chosen.id) { set(at(doc, all[i].path), all[i].path, false); } }
-        // Every other captured target's branch is hidden where it forks off the chosen
-        // target's ancestor chain: e.g. exporting C/D/图层 2 hides all of A when another
-        // target is A/B/图层 1, so A's own background or decoration cannot leak in.
-        // Shared ancestors stay on, and layers outside every target branch are untouched.
         for (i = 0; i < all.length; i++) {
             if (all[i].id === chosen.id) { continue; }
-            var other = all[i].path, k = 0;
-            while (k < other.length && k < chosen.path.length && other[k] === chosen.path[k]) { k++; }
-            var fork = other.slice(0, k + 1);
-            if (fork.length < other.length) { set(at(doc, fork), fork, false); }
+            var other = all[i].chain; k = 0;
+            while (k < other.length && k < chosen.chain.length && other[k] === chosen.chain[k]) { k++; }
+            want(other[k], false);
+            if (other[k] !== all[i].id) { want(all[i].id, false); }
         }
-        node = doc;
-        for (i = 0; i < chosen.path.length; i++) { node = node.layers[chosen.path[i]]; set(node, chosen.path.slice(0, i + 1), true); }
-        return changed;
+        for (i = 0; i < chosen.chain.length; i++) { want(chosen.chain[i], true); }
+        setVisible(hide, false); setVisible(show, true);
+        return {hidden:hide, shown:show};
     }
-    function restore(changed) {
-        // Deepest first, ancestors last, so a parent always ends with its own value.
-        changed.sort(function (a, b) { return b.depth - a.depth; });
-        for (var i = 0; i < changed.length; i++) { changed[i].layer.visible = changed[i].visible; }
-    }
+    function restore(changes) { setVisible(changes.shown, false); setVisible(changes.hidden, true); }
     // Same measure as Photoshop's own Export As for a folder (the 4 倍数导出 plugin):
     // the folder merged on its own — its visible layers, masks and effects — trimmed
-    // to non-transparent pixels. Common layers and other variants never affect it.
+    // to non-transparent pixels. Common layers and other targets never affect it.
     function ownBounds(doc, target) {
-        var source = at(doc, target.path), copy = source.duplicate(), merged = null, b = null, error = null;
+        var source = at(doc, target.path), copy, merged = null, b = null, error = null;
+        if (!source || source.id !== target.id) { throw new Error('图层结构已改变，请重新读取。'); }
+        copy = source.duplicate();
         try {
             if (target.kind === 'layer') {
                 // A plain layer: bake its effects, smart object or text into pixels first.
@@ -290,7 +300,6 @@ var GroupExporter = (function () {
                 b = copy.bounds;
             } else { merged = copy.merge(); copy = null; b = merged.bounds; }
         } catch (e) { error = e; }
-        // Removal errors propagate: the working copy is then discarded by the caller.
         if (merged) { merged.remove(); } else if (copy) { copy.remove(); }
         if (error || !b || !(px(b[2]) > px(b[0]) && px(b[3]) > px(b[1]))) { throw new Error('「' + target.name + '」没有可见内容，无法裁切导出。请确认图层内容和蒙版。'); }
         return [Math.floor(px(b[0])), Math.floor(px(b[1])), Math.ceil(px(b[2])), Math.ceil(px(b[3]))];
@@ -309,10 +318,72 @@ var GroupExporter = (function () {
         if (doc.bitsPerChannel !== BitsPerChannelType.EIGHT) { doc.bitsPerChannel = BitsPerChannelType.EIGHT; }
         doc.convertProfile('sRGB IEC61966-2.1', Intent.RELATIVECOLORIMETRIC, true, true);
     }
+    // A transparent document the size of the original canvas, in a colour mode that can
+    // take the clipboard as is. Same size, so "paste in place" keeps every position.
+    function blankLike(doc) {
+        var mode = NewDocumentMode.RGB, bits = BitsPerChannelType.EIGHT, same = false, profile = null, made;
+        if (doc.mode === DocumentMode.RGB) { mode = NewDocumentMode.RGB; same = true; }
+        else if (doc.mode === DocumentMode.CMYK) { mode = NewDocumentMode.CMYK; same = true; }
+        else if (doc.mode === DocumentMode.LAB) { mode = NewDocumentMode.LAB; same = true; }
+        else if (doc.mode === DocumentMode.GRAYSCALE) { mode = NewDocumentMode.GRAYSCALE; same = true; }
+        else if (doc.mode === DocumentMode.BITMAP) { mode = NewDocumentMode.GRAYSCALE; }
+        if (same) { bits = doc.bitsPerChannel; try { profile = doc.colorProfileName; } catch (untagged) { profile = null; } }
+        var w = new UnitValue(captured.width, 'px'), h = new UnitValue(captured.height, 'px');
+        if (profile) {
+            try { made = app.documents.add(w, h, doc.resolution, COMPOSITE_NAME, mode, DocumentFill.TRANSPARENT, 1, bits, profile); }
+            catch (badProfile) { made = null; }
+        }
+        if (!made) { made = app.documents.add(w, h, doc.resolution, COMPOSITE_NAME, mode, DocumentFill.TRANSPARENT, 1, bits); }
+        return own(made);
+    }
+    function pasteInPlace() {
+        var d = new ActionDescriptor();
+        d.putBoolean(sid('inPlace'), true);
+        d.putEnumerated(sid('antiAlias'), sid('antiAliasType'), sid('antiAliasNone'));
+        executeAction(sid('paste'), d, DialogModes.NO);
+    }
+    function selectLayers(ids) {
+        var i, d, r;
+        if (!ids.length) {
+            try { d = new ActionDescriptor(); r = new ActionReference(); r.putEnumerated(sid('layer'), sid('ordinal'), sid('targetEnum')); d.putReference(sid('null'), r); executeAction(sid('selectNoLayers'), d, DialogModes.NO); } catch (ignore) {}
+            return;
+        }
+        for (i = 0; i < ids.length; i++) {
+            d = new ActionDescriptor(); r = new ActionReference(); r.putIdentifier(sid('layer'), ids[i]); d.putReference(sid('null'), r);
+            if (i) { d.putEnumerated(sid('selectionModifier'), sid('selectionModifierType'), sid('addToSelection')); }
+            d.putBoolean(sid('makeVisible'), false);
+            executeAction(sid('select'), d, DialogModes.NO);
+        }
+    }
+    function sameList(a, b) {
+        if (a.length !== b.length) { return false; }
+        for (var i = 0; i < a.length; i++) { if (a[i] !== b[i]) { return false; } }
+        return true;
+    }
+    // Runs fn on the original as a single history step, so it is undone in one go.
+    function inOneStep(doc, fn) {
+        step = {fn:fn, result:null, error:null, ran:false};
+        try {
+            try { doc.suspendHistory('图层组分批导出', 'GroupExporter.__step()'); }
+            catch (unavailable) { if (step.ran) { throw unavailable; } runStep(); }
+            if (step.error) { throw step.error; }
+            return step.result;
+        } finally { step = null; }
+    }
+    function runStep() { step.ran = true; try { step.result = step.fn(); } catch (e) { step.error = e; } }
+    // The original stays open and is never duplicated: the target's visibility is set,
+    // the visible composite of the export rectangle is copied (Copy Merged, which only
+    // composites that area), then every change is put back. Only the copied pixels go
+    // into a small temporary document that is cropped, converted and saved.
     function render(token, ids, targetId, scope, destination) {
-        var original = null, composite = null, oldDialogs = app.displayDialogs, result = null, cleanupErrors = [], discard = false;
+        var original = null, composite = null, oldDialogs = app.displayDialogs, result = null, cleanupErrors = [];
+        var before = null, reverted = true, picked = null;
         var clock = new Date().getTime(), timing = {};
         function lap(name) { var t = new Date().getTime(); timing[name] = t - clock; clock = t; }
+        function revert() {
+            if (reverted) { return; }
+            reverted = true; app.activeDocument = original; original.activeHistoryState = before;
+        }
         try {
             result = withPixels(function () {
                 if (scope !== 'group' && scope !== 'canvas') { throw new Error('未知的导出范围。'); }
@@ -324,56 +395,70 @@ var GroupExporter = (function () {
                 var file = new File(destination);
                 if (!file.parent.exists || file.exists) { throw new Error('临时输出目录不存在，或临时文件已经存在。'); }
                 app.displayDialogs = DialogModes.NO;
-                discard = true; // until the working copy is back in its pristine state
-                var reused = !!(session && session.token === captured.token && captured.revision !== null && findDocument(session.docId));
-                var working = workingCopy(original);
-                lap(reused ? 'reuse' : 'duplicate');
-                app.activeDocument = working;
-                var changed = showVariant(working, checked.all, target);
-                var rect = target.rect || [0, 0, captured.width, captured.height];
-                try {
-                    // An artboard folder exports its whole artboard, like Export As.
-                    if (scope === 'group' && !target.board) {
-                        rect = intersect(rect, ownBounds(working, target)); lap('measure');
-                        if (!(rect[2] > rect[0] && rect[3] > rect[1])) { throw new Error('「' + target.name + '」在画布或画板范围内没有可见内容，无法裁切导出。'); }
-                    }
-                    // Composite the whole hierarchy before cropping, so ancestor masks,
-                    // group effects, blending and common visible layers are baked together.
-                    composite = own(working.duplicate(COMPOSITE_NAME, true)); lap('composite');
-                } finally {
-                    app.activeDocument = working;
-                    restore(changed);
-                }
-                discard = false;
+                picked = currentSelection(original);
+                lap('check');
+                var rect = target.rect || [0, 0, captured.width, captured.height], copied = false;
+                before = original.activeHistoryState; reverted = false;
+                inOneStep(original, function () {
+                    var changes = showVariant(checked.all, target);
+                    try {
+                        lap('show');
+                        // An artboard target exports its whole artboard, like Export As.
+                        if (scope === 'group' && !target.board) {
+                            rect = intersect(rect, ownBounds(original, target)); lap('measure');
+                            if (!(rect[2] > rect[0] && rect[3] > rect[1])) { throw new Error('「' + target.name + '」在画布或画板范围内没有可见内容，无法裁切导出。'); }
+                        }
+                        // Ancestor masks, group effects, blending and common visible layers
+                        // are all in the composite Copy Merged takes.
+                        var area = intersect(rect, [0, 0, captured.width, captured.height]);
+                        if (area[2] > area[0] && area[3] > area[1]) {
+                            original.selection.select([[area[0], area[1]], [area[2], area[1]], [area[2], area[3]], [area[0], area[3]]]);
+                            try { original.selection.copy(true); copied = true; } catch (nothingVisible) { copied = false; }
+                            original.selection.deselect();
+                        }
+                        lap('copy');
+                    } finally { restore(changes); }
+                });
+                revert(); lap('restore');
+                composite = blankLike(original);
                 app.activeDocument = composite;
-                crop(composite, rect);
+                if (copied) {
+                    pasteInPlace();
+                    try { app.purge(PurgeTarget.CLIPBOARDCACHE); } catch (ignorePurge) {}
+                    var b = composite.activeLayer.bounds, pb = [px(b[0]), px(b[1]), px(b[2]), px(b[3])];
+                    if (pb[0] < rect[0] - 1 || pb[1] < rect[1] - 1 || pb[2] > rect[2] + 1 || pb[3] > rect[3] + 1) { throw new Error('粘贴位置异常，未保存。请把诊断信息发给开发者。'); }
+                }
+                crop(composite, rect); lap('compose');
                 toSRGB8(composite); lap('convert');
                 var options = new PNGSaveOptions(); options.interlaced = false; options.compression = 6;
                 composite.saveAs(file, options, true, Extension.LOWERCASE);
                 if (!file.exists) { throw new Error('Photoshop 没有生成 PNG 文件。'); }
                 lap('save');
-                return {ok:true, name:target.name, width:Math.round(px(composite.width)), height:Math.round(px(composite.height)), rect:rect, timing:timing};
+                return {ok:true, name:target.name, width:Math.round(px(composite.width)), height:Math.round(px(composite.height)), rect:rect, empty:!copied, timing:timing};
             });
         } catch (e) { result = {ok:false, message:message(e), timing:timing, line:e.line || null}; }
         finally {
             if (composite) { try { var compositeId = composite.id; composite.close(SaveOptions.DONOTSAVECHANGES); disown(compositeId); } catch (closeError) { cleanupErrors.push(message(closeError)); } }
-            if (discard) { try { closeSession(); } catch (sessionError) { cleanupErrors.push(message(sessionError)); } }
+            if (original) {
+                try { revert(); } catch (revertError) { cleanupErrors.push('原 PSD 未能恢复到导出前的历史记录：' + message(revertError)); }
+                try { app.activeDocument = original; } catch (activateError) { cleanupErrors.push(message(activateError)); }
+                if (picked) { try { if (!sameList(currentSelection(original), picked)) { selectLayers(picked); } } catch (selectError) {} }
+            }
             app.displayDialogs = oldDialogs;
-            if (original) { try { app.activeDocument = original; } catch (activateError) { cleanupErrors.push(message(activateError)); } }
         }
-        if (cleanupErrors.length) { return json({ok:false, message:'临时文档未能完全关闭，请关闭 __groupexport_ 开头的临时文档后重试。' + cleanupErrors.join('；')}); }
+        if (cleanupErrors.length) { return json({ok:false, message:'导出后清理未完成：' + cleanupErrors.join('；') + '。请检查原 PSD，并关闭 ' + COMPOSITE_NAME + '（不要保存）。'}); }
         return json(result);
     }
     function release() {
         var original = app.documents.length ? app.activeDocument : null;
-        try { closeSession(); closeLeftovers(); }
-        catch (e) { return json({ok:false, message:'临时文档 ' + WORK_NAME + ' 未能关闭，请手动关闭（不要保存）。' + message(e)}); }
+        try { closeLeftovers(); }
+        catch (e) { return json({ok:false, message:'临时文档 ' + COMPOSITE_NAME + ' 未能关闭，请手动关闭（不要保存）。' + message(e)}); }
         finally { if (original) { try { app.activeDocument = original; } catch (ignore) {} } }
         return json({ok:true});
     }
     // Read-only facts for the diagnostic text. Every field is optional.
     function environment() {
-        var out = {ok:true, photoshop:String(app.version), os:String($.os), openDocuments:app.documents.length, session:session ? session.token : null,
+        var out = {ok:true, photoshop:String(app.version), os:String($.os), openDocuments:app.documents.length,
             captured:captured ? {token:captured.token, targets:captured.targets.length, revision:captured.revision} : null};
         try { out.freeMemoryMB = Math.round(app.freeMemory / 1048576); } catch (ignore) {}
         try { out.rulerUnits = String(app.preferences.rulerUnits); } catch (ignore2) {}
@@ -382,10 +467,8 @@ var GroupExporter = (function () {
         try { withPixels(function () { d.width = Math.round(px(doc.width)); d.height = Math.round(px(doc.height)); }); } catch (ignore3) {}
         try { d.resolution = doc.resolution; d.mode = String(doc.mode); d.bits = String(doc.bitsPerChannel); } catch (ignore4) {}
         try { d.fileMB = Math.round(new File(doc.fullName).length / 1048576); } catch (ignore5) { d.unsaved = true; }
-        try {
-            var r = new ActionReference(); r.putProperty(sid('property'), sid('numberOfLayers')); r.putEnumerated(sid('document'), sid('ordinal'), sid('targetEnum'));
-            d.layers = executeActionGet(r).getInteger(sid('numberOfLayers'));
-        } catch (ignore6) {}
+        try { d.layers = docProperty('numberOfLayers').getInteger(sid('numberOfLayers')); } catch (ignore6) {}
+        try { d.selection = currentSelection(doc); } catch (ignore7) {}
         out.document = d;
         return json(out);
     }
@@ -403,6 +486,6 @@ var GroupExporter = (function () {
             return json({ok:true});
         } catch (e) { return failure(e); }
     }
-    return {capture:capture, validate:validate, render:render, release:release,
+    return {capture:capture, validate:validate, render:render, release:release, __step:runStep,
         environment:function () { try { return environment(); } catch (e) { return failure(e); } }, chooseDirectory:chooseDirectory, openDirectory:openDirectory};
 }());
