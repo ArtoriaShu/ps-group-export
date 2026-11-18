@@ -79,6 +79,8 @@ function photoshop(options = {}) {
     Object.defineProperty(doc, '__tree', {value: layers, writable: true});
     Object.defineProperty(doc, 'layers', {enumerable: true, get() { domReads++; return doc.__tree; }});
     Object.defineProperty(doc, '__history', {get: () => ({id: history[current].id, length: history.length})});
+    Object.defineProperty(doc, '__position', {get: () => ({index: current + 1, count: history.length})});
+    Object.defineProperty(doc, '__undo', {value(n = 1) { doc.activeHistoryState = {index: current - n}; }});
     Object.defineProperty(doc, '__edit', {value() { history = history.slice(0, current + 1); history.push({id: nextState++}); current++; }});
     Object.defineProperty(doc, 'activeLayer', {get: () => doc.__active || tree(doc)[0], set(v) { doc.__active = v; }});
     Object.defineProperty(doc, '__active', {writable: true, value: null});
@@ -103,7 +105,11 @@ function photoshop(options = {}) {
         assert.equal(merged, true);
         const all = bounds(tree(doc)), b = [Math.max(all[0], marquee[0]), Math.max(all[1], marquee[1]), Math.min(all[2], marquee[2]), Math.min(all[3], marquee[3])];
         events.push({name: 'copy', marquee: marquee.slice(), layers: clone(tree(doc))});
-        if (!(b[2] > b[0] && b[3] > b[1])) throw new Error('No pixels were selected.');
+        if (fail === 'copy-memory') throw new Error('Could not complete the Copy Merged command because there is not enough memory (RAM).');
+        if (fail === 'copy-scratch') throw new Error('Could not complete your request because the scratch disks are full.');
+        if (fail === 'copy-cancel') { const e = new Error('User cancelled the operation'); e.number = 8007; throw e; }
+        if (fail === 'copy-other') throw new Error('General Photoshop error occurred.');
+        if (!(b[2] > b[0] && b[3] > b[1])) throw new Error(options.emptyText ?? 'Could not complete the Copy Merged command because the selected area is empty.');
         clipboard = {bounds: b};
       }}});
     Object.defineProperty(doc, 'suspendHistory', {value(title, code) {
@@ -169,7 +175,8 @@ function photoshop(options = {}) {
       const list = flat(tree(doc)), indexes = selected.map(id => list.findIndex(e => e.layer.id === id)); // 0-based from the bottom
       return {hasKey: () => true, getList: () => ({count: indexes.length, getReference: i => ({getIndex: () => indexes[i]})})};
     }
-    if (ref.cls === 'historyState' || ref.type === 'historyState') return {hasKey: () => !options.noHistoryID, getInteger: () => doc.__history.id};
+    if (ref.cls === 'historyState' || ref.type === 'historyState') return {hasKey: () => !options.noHistoryID,
+      getInteger: k => k === 'itemIndex' ? doc.__position.index : k === 'count' ? doc.__position.count : doc.__history.id};
     if (ref.type === 'document') {
       if (ref.property === 'numberOfLayers') return {getInteger: () => flat(tree(doc)).length};
       if (ref.property === 'hasBackgroundLayer') return {getBoolean: () => false};
@@ -189,6 +196,13 @@ function photoshop(options = {}) {
     const doc = docOf();
     executed.push(id);
     if (id === 'hide' || id === 'show') {
+      // 'show-once' / 'hide-once': that call fails once; '-partial' applies the first layer first.
+      // 'show-always': every show call fails, so restoring cannot finish either.
+      if (fail === id + '-once' || fail === id + '-partial' || fail === id + '-always') {
+        if (fail === id + '-partial') { const r = desc.data.null.items[0], l = flatten(tree(doc)).find(x => x.id === r.id); l.visible = id === 'show'; }
+        if (fail !== id + '-always') fail = null;
+        throw new Error('Could not complete the command because there is not enough memory (RAM).');
+      }
       for (const r of desc.data.null.items) { const l = flatten(tree(doc)).find(x => x.id === r.id); if (!l) throw new Error('no layer'); l.visible = id === 'show'; }
       return;
     }
@@ -528,4 +542,77 @@ test('P2 follow-up: a source PSD named like a temporary document is never closed
   p.app.customOptions['com.shu.groupexport.temporaryDocuments'] = d;
   p.reload(); assert.equal(p.release().ok, true); assert.ok(p.docs.includes(p.source), 'the active document is never closed');
   assert.equal(p.capture().ok, true); assert.ok(p.docs.includes(p.source));
+});
+
+// ---- Review findings (CODE_REVIEW_V1.3.0.md, 2026-11-18) ----
+
+for (const [kind, pattern] of [['copy-memory', /not enough memory/], ['copy-scratch', /scratch disks/], ['copy-cancel', /cancelled/], ['copy-other', /General Photoshop error/]]) {
+  test('P1: a Copy Merged failure (' + kind + ') stops the export with the original error and saves nothing', () => {
+    for (const scope of ['canvas', 'group']) {
+      const p = photoshop(), initial = JSON.stringify(p.source), state = p.source.__history.id, c = p.capture(); p.fail(kind);
+      const r = p.render(c, 11, scope);
+      assert.equal(r.ok, false, scope + ': not reported as success'); assert.match(r.message, /合并拷贝失败/); assert.match(r.message, pattern);
+      assert.equal(p.saves.length, 0, scope + ': no transparent PNG saved'); assert.ok(!p.executed.includes('paste'));
+      assertPristine(p, initial, [11, 12, 13], state);
+    }
+  });
+}
+
+test('P1: only Photoshop\'s "selected area is empty" error, in any UI language, means a transparent image', () => {
+  const layers = [G(1, '组', [G(11, '空', [R(101, '图', false)]), G(12, '有', [R(102, '图')])])];
+  for (const text of ['不能完成“合并拷贝”命令，因为选区是空的。', '无法完成“合并拷贝”命令，因为选中的区域为空。', '選択範囲が空なので、結合部分をコピーコマンドを完了できません。',
+    'Der Befehl „Auf eine Ebene reduziert kopieren“ konnte nicht ausgeführt werden, da der ausgewählte Bereich ist leer.']) {
+    const p = photoshop({layers: clone(layers), selected: [11, 12], emptyText: text}), r = p.render(p.capture(), 11);
+    assert.equal(r.ok, true, text); assert.equal(r.empty, true, text);
+  }
+  for (const text of ['暂存盘已满，磁盘空间不足。', '程序错误。', '']) {
+    const p = photoshop({layers: clone(layers), selected: [11, 12], emptyText: text}), r = p.render(p.capture(), 11);
+    assert.equal(r.ok, false, JSON.stringify(text) + ' is not proof of an empty area'); assert.equal(p.saves.length, 0);
+  }
+});
+
+for (const kind of ['show-once', 'hide-once', 'hide-partial', 'show-partial']) {
+  test('P1: visibility change failing midway (' + kind + ') still restores every layer of the PSD', () => {
+    for (const scope of ['canvas', 'group']) {
+      // Visibility is not part of history in the mock, as in Photoshop by default: only the explicit restore puts it back.
+      const p = photoshop(), initial = JSON.stringify(p.source), state = p.source.__history.id, c = p.capture(); p.fail(kind);
+      const r = p.render(c, 11, scope);
+      assert.equal(r.ok, false); assert.match(r.message, /not enough memory/);
+      assert.deepEqual(allVisibility(p.source.__tree), allVisibility(JSON.parse(initial).layers), scope + ': every layer\'s visibility is back');
+      assertPristine(p, initial, [11, 12, 13], state);
+      assert.equal(p.render(c, 11, scope).ok, true, 'the next export works');
+    }
+  });
+}
+
+test('P1: a restore that cannot finish is reported with the layers left changed, never as success', () => {
+  const p = photoshop(), c = p.capture(); p.fail('show-always');
+  const r = p.render(c, 11);
+  assert.equal(r.ok, false); assert.match(r.message, /显示状态未能恢复/); assert.match(r.message, /12/); assert.match(r.message, /3/);
+  assert.equal(p.saves.length, 0);
+});
+
+test('P2: exporting from an undone history position is refused before touching the PSD; the redo steps survive', () => {
+  const p = photoshop(); p.edit(); p.edit(); p.source.__undo(1);
+  const before = p.source.__position, c = p.capture(); assert.equal(c.ok, true);
+  const ids = JSON.stringify(c.targets.map(t => t.id));
+  const v = p.invoke(`GroupExporter.validate(${JSON.stringify(c.token)},${ids})`);
+  assert.equal(v.ok, false); assert.match(v.message, /1 步可以重做/);
+  const r = p.render(c, 11); assert.equal(r.ok, false); assert.match(r.message, /可以重做/);
+  assert.deepEqual(p.source.__position, before, 'the redoable state is still there');
+  assert.equal(p.events.length, 0); assert.equal(p.saves.length, 0); assert.ok(!p.executed.includes('hide'));
+});
+
+test('P2: the redoable step an export leaves behind is its own and does not block the next image', () => {
+  const p = photoshop(); p.edit();
+  const c = p.capture(), start = p.source.__position;
+  assert.equal(p.render(c, 11).ok, true);
+  assert.deepEqual(p.source.__position, {index: start.index, count: start.count + 1}, 'our step is the one redoable state');
+  assert.equal(p.render(c, 12).ok, true); assert.equal(p.render(c, 13, 'group').ok, true);
+  assert.deepEqual(p.source.__position, {index: start.index, count: start.count + 1});
+  // The user now undoes one of their own edits: their step and ours are redoable, and theirs must be kept.
+  p.source.__undo(1);
+  const d = p.capture(), r = p.render(d, 11);
+  assert.equal(r.ok, false); assert.match(r.message, /2 步可以重做/);
+  assert.deepEqual(p.source.__position, {index: start.index - 1, count: start.count + 1});
 });

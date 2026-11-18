@@ -1,7 +1,9 @@
 ﻿/* Photoshop ExtendScript (ES3). The original document is never saved; every change made
    while exporting is put back (visibility explicitly, everything else by history). */
 var GroupExporter = (function () {
-    var captured = null, sequence = 0, step = null;
+    // ownRedo: the history position this plugin left a document at after rolling back
+    // its own export step, so that leftover (and only it) may be replaced next time.
+    var captured = null, sequence = 0, step = null, ownRedo = null;
     var COMPOSITE_NAME = '__groupexport_composite__', LEGACY_WORK_NAME = '__groupexport_work__';
     function sid(s) { return stringIDToTypeID(s); }
     function quote(s) { return '"' + String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/[\x00-\x1f\u2028\u2029]/g, function (c) { return '\\u' + ('0000' + c.charCodeAt(0).toString(16)).slice(-4); }) + '"'; }
@@ -82,6 +84,18 @@ var GroupExporter = (function () {
         } catch (ignore2) {}
         try { out.push(doc.activeLayer.id); } catch (ignore3) {}
         return out;
+    }
+    // Where the document stands in its history: 1-based position of the current state,
+    // number of states, and the current state's ID. null when the host cannot tell.
+    function historyPosition() {
+        try {
+            var r = new ActionReference(); r.putProperty(sid('historyState'), sid('currentHistoryState'));
+            var d = executeActionGet(r);
+            if (d.hasKey(sid('itemIndex')) && d.hasKey(sid('count'))) {
+                return {index:d.getInteger(sid('itemIndex')), count:d.getInteger(sid('count')), id:d.hasKey(sid('ID')) ? d.getInteger(sid('ID')) : null};
+            }
+        } catch (ignore) {}
+        return null;
     }
     function px(v) { return typeof v === 'number' ? v : v.as('px'); }
     function scalar(d, key) {
@@ -236,6 +250,15 @@ var GroupExporter = (function () {
             throw new Error('PSD 在读取后已被修改。请重新读取，再开始导出。');
         }
         if (!ids || !ids.length) { throw new Error('没有待导出的图层。'); }
+        // Exporting adds a history step to the original. Linear history drops every
+        // redoable state after the current one, so refuse before changing anything,
+        // unless the only redoable state is the one this plugin's last export left.
+        var position = historyPosition();
+        if (position && position.count > position.index &&
+            !(ownRedo && ownRedo.docId === doc.id && ownRedo.index === position.index && ownRedo.count === position.count && ownRedo.id === position.id)) {
+            throw new Error('PSD 当前停在较早的历史记录上，后面还有 ' + (position.count - position.index) + ' 步可以重做。导出会清掉这些可重做的步骤，因此没有导出，原 PSD 未改动。' +
+                '请在历史记录面板中点最后一步后重新读取；如果不再需要这些步骤，在 PSD 上做任意一次编辑后重新读取。');
+        }
         // Every captured layer is checked by ID, including ones removed from the panel
         // list: all of them are hidden while another one is exported.
         for (j = 0; j < captured.targets.length; j++) {
@@ -263,12 +286,13 @@ var GroupExporter = (function () {
         executeAction(sid(visible ? 'show' : 'hide'), d, DialogModes.NO);
     }
     function isVisible(id) { return layerProperty(id, 'visible').getBoolean(sid('visible')); }
-    // Shows exactly one target (and its ancestors) and hides every other captured
-    // target. Every other target's branch is hidden where it forks off the chosen
-    // target's ancestor chain: exporting C/D/图层 2 hides all of A when another target
-    // is A/B/图层 1, so A's own background cannot leak in. Shared ancestors stay on and
-    // layers outside every target branch keep their state. Returns the undo lists.
-    function showVariant(all, chosen) {
+    // Plans showing exactly one target (and its ancestors) and hiding every other
+    // captured target. Every other target's branch is hidden where it forks off the
+    // chosen target's ancestor chain: exporting C/D/图层 2 hides all of A when another
+    // target is A/B/图层 1, so A's own background cannot leak in. Shared ancestors stay
+    // on and layers outside every target branch keep their state. Only reads: the
+    // caller applies the plan inside the block that restores it.
+    function planVariant(all, chosen) {
         var hide = [], show = [], seen = {}, i, k;
         function want(id, visible) {
             if (seen['l' + id]) { return; } seen['l' + id] = true;
@@ -282,10 +306,23 @@ var GroupExporter = (function () {
             if (other[k] !== all[i].id) { want(all[i].id, false); }
         }
         for (i = 0; i < chosen.chain.length; i++) { want(chosen.chain[i], true); }
-        setVisible(hide, false); setVisible(show, true);
         return {hidden:hide, shown:show};
     }
-    function restore(changes) { setVisible(changes.shown, false); setVisible(changes.hidden, true); }
+    function applyVariant(plan) { setVisible(plan.hidden, false); setVisible(plan.shown, true); }
+    // Puts back every layer the plan touches, whether or not applying it got that far
+    // (setting a layer to its original state again is harmless). If a batch call fails,
+    // each layer is retried on its own; both lists are always attempted.
+    function restore(plan) {
+        var failed = [], first = null;
+        function put(list, visible) {
+            try { setVisible(list, visible); return; } catch (batchError) { first = first || batchError; }
+            for (var i = 0; i < list.length; i++) {
+                try { setVisible([list[i]], visible); } catch (oneError) { failed.push(list[i]); }
+            }
+        }
+        put(plan.shown, false); put(plan.hidden, true);
+        if (failed.length) { throw new Error('原 PSD 有 ' + failed.length + ' 个图层的显示状态未能恢复（图层 ID：' + failed.join('、') + '），请检查图层面板：' + message(first)); }
+    }
     // Same measure as Photoshop's own Export As for a folder (the 4 倍数导出 plugin):
     // the folder merged on its own — its visible layers, masks and effects — trimmed
     // to non-transparent pixels. Common layers and other targets never affect it.
@@ -336,6 +373,16 @@ var GroupExporter = (function () {
         if (!made) { made = app.documents.add(w, h, doc.resolution, COMPOSITE_NAME, mode, DocumentFill.TRANSPARENT, 1, bits); }
         return own(made);
     }
+    // Copy Merged on an area with no visible pixels fails with "Could not complete the
+    // Copy Merged command because the selected area is empty." That error alone means
+    // "transparent"; Photoshop has no error code for it, so the localized text is
+    // matched. A user cancel (8007) never counts. Unknown text stops the export rather
+    // than saving a blank image: a false "empty" would hide a real failure.
+    var EMPTY_COPY = /selected area is empty|area is empty|(选区|选中的区域|所选区域|选取范围|選取範圍|選定的區域)(是|为|為)空|選択範囲.{0,6}空|選択された(範囲|領域).{0,4}空|ausgewählte Bereich ist leer|zone sélectionnée est vide|área seleccionada está vacía|area selezionata è vuota|область пуста/i;
+    function emptyCopy(e) {
+        if (e && (e.number === 8007 || e.number === -8007)) { return false; }
+        return EMPTY_COPY.test(message(e));
+    }
     function pasteInPlace() {
         var d = new ActionDescriptor();
         d.putBoolean(sid('inPlace'), true);
@@ -383,6 +430,9 @@ var GroupExporter = (function () {
         function revert() {
             if (reverted) { return; }
             reverted = true; app.activeDocument = original; original.activeHistoryState = before;
+            // Remember where this left the history: the redoable step after it is ours.
+            var position = historyPosition();
+            ownRedo = position ? {docId:original.id, index:position.index, count:position.count, id:position.id} : null;
         }
         try {
             result = withPixels(function () {
@@ -400,9 +450,9 @@ var GroupExporter = (function () {
                 var rect = target.rect || [0, 0, captured.width, captured.height], copied = false;
                 before = original.activeHistoryState; reverted = false;
                 inOneStep(original, function () {
-                    var changes = showVariant(checked.all, target);
+                    var plan = planVariant(checked.all, target), failed = null;
                     try {
-                        lap('show');
+                        applyVariant(plan); lap('show');
                         // An artboard target exports its whole artboard, like Export As.
                         if (scope === 'group' && !target.board) {
                             rect = intersect(rect, ownBounds(original, target)); lap('measure');
@@ -413,11 +463,19 @@ var GroupExporter = (function () {
                         var area = intersect(rect, [0, 0, captured.width, captured.height]);
                         if (area[2] > area[0] && area[3] > area[1]) {
                             original.selection.select([[area[0], area[1]], [area[2], area[1]], [area[2], area[3]], [area[0], area[3]]]);
-                            try { original.selection.copy(true); copied = true; } catch (nothingVisible) { copied = false; }
+                            try { original.selection.copy(true); copied = true; }
+                            catch (copyError) {
+                                // Only Photoshop's "selected area is empty" means a transparent
+                                // image; memory, scratch disk, cancel or anything else stops.
+                                if (!emptyCopy(copyError)) { throw new Error('合并拷贝失败，没有导出：' + message(copyError)); }
+                            }
                             original.selection.deselect();
                         }
                         lap('copy');
-                    } finally { restore(changes); }
+                    } catch (e) { failed = e; }
+                    try { restore(plan); }
+                    catch (restoreError) { failed = failed ? new Error(message(failed) + '；' + message(restoreError)) : restoreError; }
+                    if (failed) { throw failed; }
                 });
                 revert(); lap('restore');
                 composite = blankLike(original);
