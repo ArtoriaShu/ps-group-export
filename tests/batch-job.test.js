@@ -87,7 +87,7 @@ test('the file logger writes a daily log in the chosen folder', t => {
   logger.info('panel.start', '面板启动', {a: 1});
   const files = fs.readdirSync(path.join(s.root, 'logs', 'nested'));
   assert.equal(files.length, 1); assert.match(files[0], /^groupexport-\d{4}-\d{2}-\d{2}\.log$/);
-  const text = require('../com.shu.groupexport/js/diagnostics').bundle({version: '1.2.0', environment: {ok: true}, state: {}, entries: logger.entries(), logFile: logger.file()});
+  const text = require('../com.shu.groupexport/js/diagnostics').bundle({version: '1.3.0', environment: {ok: true}, state: {}, entries: logger.entries(), logFile: logger.file()});
   assert.match(text, /面板启动/); assert.match(text, /图层组分批导出 诊断信息/);
 });
 

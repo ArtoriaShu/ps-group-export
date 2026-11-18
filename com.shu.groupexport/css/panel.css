@@ -92,3 +92,21 @@ progress { display:block; width:100%; height:4px; accent-color:var(--accent); ma
   #pickHint, .check small { display:none; }
   .read-button { margin-top:8px; }
 }
+
+/* Brush font for the easter egg: Zhi Mang Xing (SIL OFL 1.1, see assets/poem/ZhiMangXing-OFL.txt), subset to the poem's characters. */
+@font-face { font-family:"EggBrush"; src:url("../assets/poem/ZhiMangXing-subset.woff") format("woff"); font-display:block; }
+/* Easter egg (js/egg.js): ink bleeds over the panel, the clip surfaces, the poem is brushed below it. Clicks pass through. */
+.egg { position:fixed; top:0; right:0; bottom:0; left:0; z-index:50; pointer-events:none; visibility:hidden; opacity:0; }
+.egg-open { visibility:visible; opacity:1; }
+.egg-closing { visibility:visible; opacity:0; transition:opacity .85s ease; }
+.egg canvas { position:absolute; top:0; left:0; }
+.egg-defs { position:absolute; width:0; height:0; }
+.app-icon { position:relative; z-index:51; cursor:default; }
+.egg-poem { position:absolute; right:0; bottom:0; left:0; display:flex; flex-direction:row-reverse; justify-content:center; align-items:center; gap:.8em; padding:0 12px 26px; }
+.egg-line { margin:0; -webkit-writing-mode:vertical-rl; writing-mode:vertical-rl; font-family:"EggBrush","STXingkai","华文行楷","Xingkai SC","Xingkai TC","FZShuTi","方正舒体","STKaiti","KaiTi","楷体",serif; letter-spacing:.08em; line-height:1; white-space:nowrap; color:#ece6d8; -webkit-filter:url(#egg-ink); filter:url(#egg-ink); }
+.egg-pair { display:flex; flex-direction:row-reverse; gap:.25em; }
+/* Each character is brushed in from top to bottom: a mask taller than the glyph slides up. */
+.egg-ch { display:inline-block; opacity:0; -webkit-mask-image:linear-gradient(to bottom,#000 0,#000 42%,transparent 58%,transparent 100%); mask-image:linear-gradient(to bottom,#000 0,#000 42%,transparent 58%,transparent 100%); -webkit-mask-size:100% 240%; mask-size:100% 240%; -webkit-mask-repeat:no-repeat; mask-repeat:no-repeat; animation:egg-brush .75s cubic-bezier(.3,.6,.35,1) forwards; }
+.egg-ch.egg-done { opacity:1; animation:none; -webkit-mask-image:none; mask-image:none; }
+.egg-glyph { display:inline-block; }
+@keyframes egg-brush { 0% { opacity:0; -webkit-mask-position:0 100%; mask-position:0 100%; } 12% { opacity:1; } 100% { opacity:1; -webkit-mask-position:0 0; mask-position:0 0; } }

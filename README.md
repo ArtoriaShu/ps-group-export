@@ -1,4 +1,4 @@
-# 图层组分批导出 v1.2.0
+# 图层组分批导出 v1.3.0
 
 作者：Shu
 
@@ -56,6 +56,10 @@
 ## 卸载
 
 退出 Photoshop 后，Windows 运行 `uninstall.bat`，macOS 运行 `uninstall-mac.command`。只删除本插件，不删除导出的 PNG，不修改其他插件。不会撤销共享的 CEP 调试设置，以免影响其他未签名扩展。
+
+## 彩蛋
+
+鼠标在面板左上角的图标上停留片刻会触发一个小彩蛋。所用素材在 `com.shu.groupexport/assets/poem/`：视频帧（JPEG），以及截取了所需字符的志莽行书字体（Zhi Mang Xing，SIL Open Font License 1.1，许可证见同目录 `ZhiMangXing-OFL.txt`）。导出进行中不会触发。
 
 ## 开发与验证
 

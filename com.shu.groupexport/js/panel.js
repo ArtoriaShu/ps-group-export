@@ -2,7 +2,7 @@
   'use strict';
   var bridge = window.__adobe_cep__, nodes = {}, batch = null, loaded = null, busy = false, reading = false;
   var directory = '', job = null, lastDirectory = '', started = 0, timer = null, cancelling = false;
-  var VERSION = '1.2.0', logger = null, diagnostics = null, jobCount = 0, lastResult = null;
+  var VERSION = '1.3.0', logger = null, diagnostics = null, jobCount = 0, lastResult = null;
   ['pickSelf', 'pickChildren', 'pickHint', 'readSelection', 'clearTargets', 'targetCount', 'documentName', 'targetList', 'scopeGroup', 'scopeCanvas', 'scopeHint',
     'chooseDirectory', 'directoryPath', 'byParent', 'export', 'cancel', 'openDirectory', 'status', 'statusTitle', 'statusDetail', 'progress',
     'copyDiagnostics', 'openLogs', 'diagnosticText'].forEach(function (id) { nodes[id] = document.getElementById(id); });
