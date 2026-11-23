@@ -158,6 +158,10 @@ var GroupExporter = (function () {
         if (closed && original) { try { app.activeDocument = original; } catch (ignore) {} }
         return closed;
     }
+    // A layer or folder whose name starts with #公共 (half- or full-width #) is common:
+    // it, and everything inside a common folder, stays as it is in every image.
+    // Everything else that is not the target or one of its ancestors is hidden.
+    function isCommon(name) { return /^\s*[#\uFF03]\s*公共/.test(name); }
     // mode 'self': every selected layer or group is one image.
     // mode 'children': every direct child of each selected group is one image.
     // One top-down pass over the flat ActionManager layer list (group start, its
@@ -168,42 +172,48 @@ var GroupExporter = (function () {
             try { closeLeftovers(); } catch (ignore) {}
             var children = mode === 'children';
             return withPixels(function () {
-                var doc = active(), ids = currentSelection(doc), wanted = {}, remaining = 0, plainWanted = 0, i, j;
+                var doc = active(), ids = currentSelection(doc), wanted = {}, remaining = 0, i, j;
                 if (!ids.length) { throw new Error('请先在图层面板中选中至少一个图层。'); }
                 var START = sid('layerSectionStart'), END = sid('layerSectionEnd');
                 for (i = 0; i < ids.length; i++) {
                     if (wanted['l' + ids[i]]) { continue; }
-                    var section = null;
-                    try { section = layerProperty(ids[i], 'layerSection').getEnumerationValue(sid('layerSection')); } catch (unknownLayer) {}
                     wanted['l' + ids[i]] = true; remaining++;
-                    if (section !== START) { plainWanted++; }
                 }
                 var count = docProperty('numberOfLayers').getInteger(sid('numberOfLayers')), bottom = hasBackground() ? 0 : 1;
-                var stack = [{id:null, path:[], names:[], chain:[], rect:null, counter:0, collect:false}], collecting = 0;
-                var picked = [], collected = [], counts = {};
+                var stack = [{id:null, key:'root', path:[], names:[], chain:[], rect:null, counter:0, collect:false, common:false}];
+                var picked = [], collected = [], counts = {}, commonSkipped = 0;
+                // The whole layer tree, by ID, so an export can hide everything that is
+                // neither the current target (with its ancestors) nor a #公共 layer.
+                var nodes = {}, kids = {root:[]}, common = [], commonNames = [];
                 function target(id, name, frame, branch, chain, rect, board, kind) {
                     return {id:id, name:name, kind:kind, parent:frame.names.length ? frame.names[frame.names.length - 1] : '', parentId:frame.id,
                         path:branch, chain:chain, breadcrumb:frame.names.concat([name]).join(' / '), rect:rect, board:!!board};
                 }
-                for (i = count; i >= bottom && (remaining || collecting); i--) {
+                // Every layer is read (section, ID, name): #公共 layers can be anywhere.
+                for (i = count; i >= bottom; i--) {
                     var top = stack[stack.length - 1];
                     var kindOf = indexProperty(i, 'layerSection').getEnumerationValue(sid('layerSection'));
-                    if (kindOf === END) { if (top.collect) { collecting--; } if (stack.length > 1) { stack.pop(); } continue; }
+                    if (kindOf === END) { if (stack.length > 1) { stack.pop(); } continue; }
                     var group = kindOf === START, position = top.counter++;
-                    // Plain layers matter only when collected under a selected parent or selected themselves.
-                    if (!group && !top.collect && !plainWanted) { continue; }
                     var id = indexProperty(i, 'layerID').getInteger(sid('layerID')), selected = !!wanted['l' + id];
-                    if (!group && !top.collect && !selected) { continue; }
                     var name = String(indexProperty(i, 'name').getString(sid('name')));
-                    var branch = top.path.concat([position]), chain = top.chain.concat([id]);
+                    var branch = top.path.concat([position]), chain = top.chain.concat([id]), marked = isCommon(name);
+                    nodes['l' + id] = {id:id, chain:chain}; kids[top.key].push(id);
+                    // A marked layer or folder is common; everything inside a marked folder is too.
+                    if (marked && !top.common) { common.push(id); commonNames.push(top.names.concat([name]).join(' / ')); }
                     // Artboards are always top-level groups in Photoshop.
                     var board = stack.length === 1 && group ? boardRect(id) : null, rect = board || top.rect;
-                    if (top.collect) { collected.push(target(id, name, top, branch, chain, rect, board, group ? 'group' : 'layer')); counts['l' + top.id] = (counts['l' + top.id] || 0) + 1; }
-                    if (selected) { remaining--; if (!group) { plainWanted--; } picked.push(target(id, name, top, branch, chain, rect, board, group ? 'group' : 'layer')); }
+                    // #公共 layers are never exported on their own.
+                    if (top.collect && !marked) { collected.push(target(id, name, top, branch, chain, rect, board, group ? 'group' : 'layer')); counts['l' + top.id] = (counts['l' + top.id] || 0) + 1; }
+                    if (selected) {
+                        remaining--;
+                        if (marked) { commonSkipped++; }
+                        else { picked.push(target(id, name, top, branch, chain, rect, board, group ? 'group' : 'layer')); }
+                    }
                     if (group) {
-                        var frame = {id:id, path:branch, names:top.names.concat([name]), chain:chain, rect:rect, counter:0, collect:children && selected};
-                        if (frame.collect) { collecting++; }
-                        stack.push(frame);
+                        kids['l' + id] = [];
+                        stack.push({id:id, key:'l' + id, path:branch, names:top.names.concat([name]), chain:chain, rect:rect, counter:0,
+                            collect:children && selected && !marked, common:top.common || marked});
                     }
                 }
                 if (remaining) { throw new Error('有 ' + remaining + ' 个选中的图层没有在图层列表中找到。请在图层面板中重新选择后再读取。'); }
@@ -224,6 +234,7 @@ var GroupExporter = (function () {
                 } else {
                     for (i = 0; i < picked.length; i++) { if (!ignored['l' + picked[i].id]) { found.push(picked[i]); } }
                 }
+                if (!found.length) { throw new Error('选中的都是名称以 #公共 开头的公共图层（或其所在的公共文件夹），公共图层不会单独导出。请选择需要导出的图层。'); }
                 for (i = 0; i < found.length; i++) {
                     for (j = i + 1; j < found.length; j++) {
                         if (contains(found[i].path, found[j].path) || contains(found[j].path, found[i].path)) {
@@ -236,9 +247,10 @@ var GroupExporter = (function () {
                     return a.path.length - b.path.length;
                 });
                 captured = {token:String(doc.id) + '-' + (++sequence), docId:doc.id, revision:revision(),
-                    width:Math.round(px(doc.width)), height:Math.round(px(doc.height)), targets:found};
+                    width:Math.round(px(doc.width)), height:Math.round(px(doc.height)), targets:found,
+                    layerCount:count, nodes:nodes, kids:kids, common:common};
                 return json({ok:true, token:captured.token, docId:doc.id, documentName:String(doc.name), targets:found, ignored:ignoredCount,
-                    scanned:count - i, layers:count});
+                    common:commonNames, commonSkipped:commonSkipped, scanned:count - bottom + 1, layers:count});
             });
         } catch (e) { return failure(e); }
     }
@@ -250,6 +262,9 @@ var GroupExporter = (function () {
             throw new Error('PSD 在读取后已被修改。请重新读取，再开始导出。');
         }
         if (!ids || !ids.length) { throw new Error('没有待导出的图层。'); }
+        // Without history IDs an added or deleted layer would go unnoticed, and it
+        // would not be in the tree used to decide what to hide.
+        if (docProperty('numberOfLayers').getInteger(sid('numberOfLayers')) !== captured.layerCount) { throw new Error('图层结构已改变，请重新读取。'); }
         // Exporting adds a history step to the original. Linear history drops every
         // redoable state after the current one, so refuse before changing anything,
         // unless the only redoable state is the one this plugin's last export left.
@@ -286,26 +301,54 @@ var GroupExporter = (function () {
         executeAction(sid(visible ? 'show' : 'hide'), d, DialogModes.NO);
     }
     function isVisible(id) { return layerProperty(id, 'visible').getBoolean(sid('visible')); }
-    // Plans showing exactly one target (and its ancestors) and hiding every other
-    // captured target. Every other target's branch is hidden where it forks off the
-    // chosen target's ancestor chain: exporting C/D/图层 2 hides all of A when another
-    // target is A/B/图层 1, so A's own background cannot leak in. Shared ancestors stay
-    // on and layers outside every target branch keep their state. Only reads: the
-    // caller applies the plan inside the block that restores it.
+    // Clipped onto the layer below it (Create Clipping Mask).
+    function clipped(id) { try { return layerProperty(id, 'group').getBoolean(sid('group')); } catch (none) { return false; } }
+    // Plans the visibility for one image. Visible: the chosen target (its contents as
+    // in the PSD) and its ancestors, plus every #公共 layer or folder (as in the PSD)
+    // and the ancestors it needs to show. Hidden: everything else that sits beside
+    // those, so a parent group nobody marked never leaks into another image. Inside a
+    // #公共 folder the contents keep their state, except other targets, which are
+    // always hidden. A #公共 layer inside a target belongs to that target only. Only
+    // reads: the caller applies the plan inside the block that restores it.
     function planVariant(all, chosen) {
-        var hide = [], show = [], seen = {}, i, k;
+        var hide = [], show = [], seen = {}, off = {}, path = {}, keep = {}, isTarget = {}, i, j;
         function want(id, visible) {
             if (seen['l' + id]) { return; } seen['l' + id] = true;
+            if (!visible) { off['l' + id] = true; }
             if (isVisible(id) !== visible) { (visible ? show : hide).push(id); }
         }
+        for (i = 0; i < all.length; i++) { isTarget['l' + all[i].id] = true; }
+        for (i = 0; i < chosen.chain.length; i++) { path['l' + chosen.chain[i]] = true; }
+        for (i = 0; i < captured.common.length; i++) {
+            var chain = captured.nodes['l' + captured.common[i]].chain, inside = false;
+            for (j = 0; j < chain.length; j++) { if (isTarget['l' + chain[j]]) { inside = true; break; } }
+            if (inside) { continue; }
+            keep['l' + captured.common[i]] = true;
+            for (j = 0; j < chain.length - 1; j++) { path['l' + chain[j]] = true; }
+        }
+        function walk(key, kept) {
+            var list = captured.kids[key] || [], base = [], held = {}, n, b;
+            // A clipping group (a base and the layers clipped onto it, which sit above it)
+            // stays together: a clipped target needs its base, and a base target keeps
+            // the adjustments and effects clipped onto it.
+            if (!kept && list.length > 1) {
+                for (n = list.length - 1, b = null; n >= 0; n--) { base[n] = b !== null && clipped(list[n]) ? b : (b = n); }
+                for (n = 0; n < list.length; n++) { if (path['l' + list[n]] || keep['l' + list[n]]) { held['c' + base[n]] = true; } }
+            }
+            for (n = 0; n < list.length; n++) {
+                var id = list[n], k = 'l' + id;
+                if (path[k]) { want(id, true); if (id !== chosen.id) { walk(k, kept || !!keep[k]); } }
+                else if (!kept && !keep[k] && !held['c' + base[n]]) { want(id, false); }
+            }
+        }
+        walk('root', false);
+        // Other targets inside a #公共 folder (or one whose branch is still on).
         for (i = 0; i < all.length; i++) {
             if (all[i].id === chosen.id) { continue; }
-            var other = all[i].chain; k = 0;
-            while (k < other.length && k < chosen.chain.length && other[k] === chosen.chain[k]) { k++; }
-            want(other[k], false);
-            if (other[k] !== all[i].id) { want(all[i].id, false); }
+            var hidden = false;
+            for (j = 0; j < all[i].chain.length; j++) { if (off['l' + all[i].chain[j]]) { hidden = true; break; } }
+            if (!hidden) { want(all[i].id, false); }
         }
-        for (i = 0; i < chosen.chain.length; i++) { want(chosen.chain[i], true); }
         return {hidden:hide, shown:show};
     }
     function applyVariant(plan) { setVisible(plan.hidden, false); setVisible(plan.shown, true); }

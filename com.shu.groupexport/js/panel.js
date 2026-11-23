@@ -2,7 +2,7 @@
   'use strict';
   var bridge = window.__adobe_cep__, nodes = {}, batch = null, loaded = null, busy = false, reading = false;
   var directory = '', job = null, lastDirectory = '', started = 0, timer = null, cancelling = false;
-  var VERSION = '1.3.1', logger = null, diagnostics = null, jobCount = 0, lastResult = null;
+  var VERSION = '1.4.0', logger = null, diagnostics = null, jobCount = 0, lastResult = null;
   ['pickSelf', 'pickChildren', 'pickHint', 'readSelection', 'clearTargets', 'targetCount', 'documentName', 'targetList', 'scopeGroup', 'scopeCanvas', 'scopeHint',
     'chooseDirectory', 'directoryPath', 'byParent', 'export', 'cancel', 'openDirectory', 'status', 'statusTitle', 'statusDetail', 'progress',
     'copyDiagnostics', 'openLogs', 'diagnosticText'].forEach(function (id) { nodes[id] = document.getElementById(id); });
@@ -88,15 +88,22 @@
     });
     render();
   }
+  // Which layers every image keeps besides its own: the #公共 ones, or none.
+  function commonText(common) {
+    if (!common || !common.length) { return '没有名称以 #公共 开头的图层：每张图只包含图层本身和它的上级组，其他图层都隐藏。'; }
+    var shown = common.slice(0, 3).join('、') + (common.length > 3 ? ' 等 ' + common.length + ' 个' : '');
+    return '公共图层：' + shown + '，会出现在每张图里；其他未标记的图层都隐藏。';
+  }
   function readSelection() {
     if (busy || reading) { return; }
     reading = true; render(); status('working', pickMode() === 'children' ? '正在读取父级下的图层…' : '正在读取选中的图层…', '请稍候。');
     host('GroupExporter.capture(' + quote(pickMode()) + ')', function (r) {
       reading = false;
-      if (r.ok) { logger.info('capture', '读取 ' + r.targets.length + ' 个图层（' + (pickMode() === 'children' ? '选父级' : '直接选图层') + '）', {document: r.documentName, token: r.token, ignored: r.ignored, scanned: r.scanned, layers: r.layers, targets: r.targets.map(function (t) { return t.breadcrumb; })}); }
+      if (r.ok) { logger.info('capture', '读取 ' + r.targets.length + ' 个图层（' + (pickMode() === 'children' ? '选父级' : '直接选图层') + '）', {document: r.documentName, token: r.token, ignored: r.ignored, common: r.common, commonSkipped: r.commonSkipped, scanned: r.scanned, layers: r.layers, targets: r.targets.map(function (t) { return t.breadcrumb; })}); }
       if (r.ok) {
         loaded = r; targetList();
-        status('idle', '已读取 ' + r.targets.length + ' 个图层', (r.ignored ? '已忽略 ' + r.ignored + ' 个位于其他选中组内部的图层（按 Shift 连选展开的组时会一并选中）。' : '') + '确认清单、导出范围和保存目录后开始导出。');
+        status('idle', '已读取 ' + r.targets.length + ' 个图层', (r.ignored ? '已忽略 ' + r.ignored + ' 个位于其他选中组内部的图层（按 Shift 连选展开的组时会一并选中）。' : '') +
+          (r.commonSkipped ? '已跳过 ' + r.commonSkipped + ' 个 #公共 图层（公共图层不单独导出）。' : '') + commonText(r.common) + '确认清单、导出范围和保存目录后开始导出。');
       }
       else { status('error', '读取失败', r.message); }
       render();
