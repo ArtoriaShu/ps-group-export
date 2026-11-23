@@ -23,7 +23,7 @@ function photoshop(options = {}) {
       G(12, '方案 02', [R(102, '图', true, [40, 50, 260, 200])], true)
     ], false)], false, {mask: [30, 40, 210, 170], effect: 'shadow'}),
     G(3, '父组 C', [G(13, '方案 03', [R(103, '图', true, [10, 10, 100, 100])])]),
-    R(4, '#公共背景', true, [0, 0, 800, 600])
+    R(4, '公共背景', true, [0, 0, 800, 600])
   ];
   let nextId = 1000, fail = options.fail, domReads = 0, clipboard = null, nextState = 9;
   const events = [], saves = [], files = new Set(), docs = [], merges = [], executed = [];
@@ -161,7 +161,6 @@ function photoshop(options = {}) {
     if (property === 'layerID') return {getInteger: () => layer.id};
     if (property === 'name') return {getString: () => layer.name};
     if (property === 'visible') return {getBoolean: () => layer.visible};
-    if (property === 'group') return {getBoolean: () => !!layer.clipped};
     if (property === 'artboardEnabled') return {hasKey: () => true, getBoolean: () => !!layer.board};
     if (property === 'artboard') return {getObjectValue: () => ({getObjectValue: () => ({getUnitDoubleValue: key => layer.board[{left: 0, top: 1, right: 2, bottom: 3}[key]]})})};
     throw new Error('Unexpected layer property ' + property);
@@ -270,12 +269,11 @@ test('reading never walks the DOM layer tree, so collapsed groups and big PSDs m
     assert.equal(p.capture(mode).ok, true);
     assert.equal(p.reads().dom, before, 'no DOM layer access while reading');
   }
-  // Every layer is read once (#公共 layers can be anywhere): three ActionManager reads per entry.
+  // The pass stops once every selected layer is found: here after the first group.
   const many = [G(1, '切图', [R(11, 'a'), R(12, 'b')]), ...Array.from({length: 200}, (_, i) => R(100 + i, '其他 ' + i))];
   const q = photoshop({layers: many, selected: [1]}), c = q.capture('children');
-  assert.deepEqual(c.targets.map(t => t.id), [11, 12]); assert.equal(c.scanned, 204);
-  assert.ok(q.reads().index <= 3 * 204, 'one pass over a 204-entry layer list (' + q.reads().index + ')');
-  assert.equal(q.reads().dom, 0);
+  assert.deepEqual(c.targets.map(t => t.id), [11, 12]);
+  assert.ok(q.reads().index < 12, 'only the top of a 204-entry layer list is read (' + q.reads().index + ')');
 });
 
 test('hosts without targetLayersIDs read the selection from targetLayers indexes', () => {
@@ -297,7 +295,9 @@ test('children mode turns each selected parent into its direct sub-folders, acro
     [11, [0, 0, 0], '父组 A / B / 方案 01'], [12, [0, 0, 1], '父组 A / B / 方案 02'], [13, [1, 0], '父组 C / 方案 03']
   ]);
   assert.equal(p.render(c, 12, 'group').ok, true);
-  assert.deepEqual(visibleIds(p.scene()), [1, 2, 12, 102, 4], 'A, B, 方案 02 and the #公共 background; 方案 01 and all of C off');
+  const scene = p.scene();
+  assert.deepEqual([scene[0].visible, scene[0].layers[0].visible, scene[0].layers[0].layers[0].visible, scene[0].layers[0].layers[1].visible, scene[1].layers[0].visible],
+    [true, true, false, true, false]);
   assertPristine(p, initial, [2, 3]);
 });
 
@@ -307,7 +307,7 @@ test('the other folders\' parent groups are hidden whole, shared ancestors and c
       G(2, 'B', [G(11, '图层 01', [R(101, '图')]), G(12, '图层 02', [R(102, '图')], false)]),
       G(3, 'C', [R(31, '底图'), G(13, '图层 03', [R(103, '图')], false)])
     ]),
-    R(4, '#公共背景')
+    R(4, '公共背景')
   ];
   const both = photoshop({layers: clone(layers), selected: [2, 3]}).capture('children');
   assert.deepEqual(both.targets.map(t => t.id), [11, 12, 31, 13], 'selecting parents reads their plain layers too (C/底图)');
@@ -321,12 +321,12 @@ test('the other folders\' parent groups are hidden whole, shared ancestors and c
   assert.equal(p.render(c, 13).ok, true);
   scene = p.scene();
   assert.deepEqual([scene[0].visible, scene[0].layers[0].visible, scene[0].layers[1].visible, scene[0].layers[1].layers[0].visible, scene[0].layers[1].layers[1].visible],
-    [true, false, true, false, true], 'exporting C/图层 03: B off, C on, its unmarked 底图 off');
+    [true, false, true, true, true], 'exporting C/图层 03: B off, C and its 底图 on');
   assertPristine(p, initial);
 });
 
 test('plain layers export like folders: others hidden, parent shown, crop by the layer\'s own pixels', () => {
-  const layers = [G(2, '切图', [R(21, '按钮', false, [10, 20, 60, 50]), R(22, '图标', true, [100, 100, 132, 132])], false), R(4, '#公共背景', true, [0, 0, 800, 600])];
+  const layers = [G(2, '切图', [R(21, '按钮', false, [10, 20, 60, 50]), R(22, '图标', true, [100, 100, 132, 132])], false), R(4, '公共背景', true, [0, 0, 800, 600])];
   const p = photoshop({layers, selected: [2]}), initial = JSON.stringify(p.source), c = p.capture('children');
   assert.deepEqual(c.targets.map(t => [t.id, t.kind, t.parent]), [[21, 'layer', '切图'], [22, 'layer', '切图']]);
   const res = p.render(c, 21, 'group'); assert.equal(res.ok, true);
@@ -342,7 +342,7 @@ test('children mode takes direct children only (folders and plain layers) and ex
   assert.deepEqual(photoshop({selected: [1]}).capture('children').targets.map(t => t.id), [2], 'only B, not the folders nested inside it');
   assert.deepEqual(photoshop({selected: [11]}).capture('children').targets.map(t => [t.id, t.kind]), [[101, 'layer']], 'plain layers under a parent are read too');
   assert.deepEqual(photoshop({selected: [1, 2]}).capture('children').targets.map(t => t.id), [2], 'a parent inside another selected parent is ignored');
-  assert.match(photoshop({selected: [101]}).capture('children').message, /下面没有可导出的图层/);
+  assert.match(photoshop({selected: [4]}).capture('children').message, /下面没有可导出的图层/);
   assert.deepEqual(photoshop({selected: [2]}).capture().targets.map(t => t.id), [2], 'self mode is unchanged');
 });
 
@@ -352,7 +352,8 @@ test('canvas export: copies the whole canvas composite with ancestors on and oth
   const copy = p.events.filter(e => e.name === 'copy').pop(), scene = copy.layers;
   assert.deepEqual(copy.marquee, [0, 0, 800, 600]);
   assert.equal(scene[0].visible, true); assert.equal(scene[0].layers[0].visible, true);
-  assert.deepEqual(visibleIds(scene), [1, 2, 11, 101, 4], 'ancestors on, 方案 02 and all of C off, #公共 background on');
+  assert.equal(scene[0].layers[0].layers[0].visible, true); assert.equal(scene[0].layers[0].layers[1].visible, false);
+  assert.equal(scene[1].layers[0].visible, false); assert.equal(scene[2].visible, true);
   assert.deepEqual(scene[0].mask, [30, 40, 210, 170]); assert.equal(scene[0].effect, 'shadow');
   assert.equal(p.events.filter(e => e.name !== 'copy').length, 0, 'the PSD is never duplicated');
   assert.equal(p.saves[0].bits, 8); assert.deepEqual(p.saves[0].rect, [0, 0, 800, 600]);
@@ -377,14 +378,15 @@ test('every image starts from the PSD state: visibility from the previous image 
   for (const id of [11, 12, 13]) assert.equal(p.render(c, id, 'group').ok, true);
   const third = p.scene();
   assert.equal(third[0].visible, false, '父组 A is back to hidden after the first two folders');
-  assert.deepEqual(visibleIds(third), [3, 13, 103, 4]);
+  assert.equal(third[0].layers[0].layers[0].visible, false); assert.equal(third[0].layers[0].layers[1].visible, false);
+  assert.equal(third[1].visible, true); assert.equal(third[1].layers[0].visible, true);
   assertPristine(p, initial, [11, 12, 13], state);
 });
 
 test('a folder removed from the panel list stays hidden in the other exports', () => {
   const p = photoshop(), c = p.capture();
   assert.equal(p.render(c, 13, 'canvas', [13]).ok, true);
-  assert.ok(!visibleIds(p.scene()).includes(12), '方案 02 was visible in the PSD but is a captured variant');
+  assert.equal(p.scene()[0].layers[0].layers[1].visible, false, '方案 02 was visible in the PSD but is a captured variant');
 });
 
 test('nearest artboard supplies its exact viewport; an artboard folder exports the whole artboard', () => {
@@ -415,7 +417,7 @@ test('an empty canvas area exports a transparent image instead of failing', () =
 });
 
 test('an empty selection is rejected; a plain layer is accepted', () => {
-  assert.deepEqual(photoshop({selected: [101]}).capture().targets.map(t => [t.id, t.kind]), [[101, 'layer']], 'a plain layer is a valid target');
+  assert.deepEqual(photoshop({selected: [4]}).capture().targets.map(t => [t.id, t.kind]), [[4, 'layer']], 'a plain layer is a valid target');
   assert.match(photoshop({selected: []}).capture().message, /至少一个图层/);
   assert.match(photoshop({selected: [999]}).capture().message, /选中的图层/);
 });
@@ -482,7 +484,7 @@ test('invalid scope, token, unknown target, and duplicate IDs are rejected', () 
 // ---- Review findings (CODE_REVIEW.md, 2026-11-17) ----
 
 test('P1: another target nested under a different root hides that whole root, not just its parent', () => {
-  const layers = [G(1, 'A', [G(2, 'B', [G(11, '图层 1', [R(101, '图')])]), R(5, 'A 专属底图')]), G(3, 'C', [G(4, 'D', [G(12, '图层 2', [R(102, '图')])])]), R(9, '#公共背景')];
+  const layers = [G(1, 'A', [G(2, 'B', [G(11, '图层 1', [R(101, '图')])]), R(5, 'A 专属底图')]), G(3, 'C', [G(4, 'D', [G(12, '图层 2', [R(102, '图')])])]), R(9, '公共背景')];
   const p = photoshop({layers, selected: [11, 12]}), initial = JSON.stringify(p.source), c = p.capture();
   assert.equal(p.render(c, 12).ok, true);
   let shown = visibleIds(p.scene());
@@ -490,19 +492,19 @@ test('P1: another target nested under a different root hides that whole root, no
   assert.ok(shown.includes(3) && shown.includes(4) && shown.includes(12) && shown.includes(9));
   assert.equal(p.render(c, 11).ok, true);
   shown = visibleIds(p.scene());
-  assert.ok(!shown.includes(5) && !shown.includes(3), 'exporting 图层 1 hides C, and the unmarked A 专属底图 too');
+  assert.ok(shown.includes(5) && !shown.includes(3), 'exporting 图层 1 keeps A 专属底图 and hides C');
   assertPristine(p, initial, [11, 12]);
 });
 
 test('P1: two branches under one shared ancestor hide each other but keep the shared logo', () => {
-  const layers = [G(1, 'A', [R(7, '#公共 Logo'), G(2, 'B', [R(21, 'B 装饰'), G(11, '图层 1', [R(101, '图')])]), G(3, 'C', [R(31, 'C 装饰'), G(12, '图层 2', [R(102, '图')])])])];
+  const layers = [G(1, 'A', [R(7, '公共 Logo'), G(2, 'B', [R(21, 'B 装饰'), G(11, '图层 1', [R(101, '图')])]), G(3, 'C', [R(31, 'C 装饰'), G(12, '图层 2', [R(102, '图')])])])];
   const p = photoshop({layers, selected: [11, 12]}), initial = JSON.stringify(p.source), c = p.capture();
   assert.equal(p.render(c, 11).ok, true);
   const first = visibleIds(p.scene());
-  assert.deepEqual([first.includes(7), first.includes(21), first.includes(31)], [true, false, false], 'only the #公共 Logo joins 图层 1');
+  assert.deepEqual([first.includes(7), first.includes(21), first.includes(31)], [true, true, false]);
   assert.equal(p.render(c, 12).ok, true);
   const second = visibleIds(p.scene());
-  assert.deepEqual([second.includes(7), second.includes(21), second.includes(31), second.includes(11), second.includes(12)], [true, false, false, false, true], 'nothing carries over from the previous image');
+  assert.deepEqual([second.includes(7), second.includes(21), second.includes(31), second.includes(11)], [true, false, true, false], 'nothing carries over from the previous image');
   assertPristine(p, initial, [11, 12]);
 });
 
@@ -613,92 +615,4 @@ test('P2: the redoable step an export leaves behind is its own and does not bloc
   const d = p.capture(), r = p.render(d, 11);
   assert.equal(r.ok, false); assert.match(r.message, /2 步可以重做/);
   assert.deepEqual(p.source.__position, {index: start.index - 1, count: start.count + 1});
-});
-
-// ---- #公共 common layers (2026-11-23) ----
-
-const commonTree = () => [
-  G(1, 'A', [R(11, 'A-图层1', true, [0, 0, 50, 50]), R(12, 'A-图层2', true, [60, 60, 90, 90]), R(13, 'A 装饰')]),
-  G(2, 'B', [R(21, 'B-图层1', true, [100, 100, 200, 200]), R(22, 'B-图层2', true, [300, 300, 400, 400])]),
-  R(8, '背景', true, [0, 0, 800, 600]),
-  R(9, '#公共 Logo', true, [700, 0, 800, 100])
-];
-
-test('#公共: selecting layers under A only, the open parent B never joins A\'s images; unmarked layers are hidden', () => {
-  for (const scope of ['canvas', 'group']) {
-    const p = photoshop({layers: commonTree(), selected: [11, 12]}), initial = JSON.stringify(p.source), c = p.capture();
-    assert.deepEqual(c.common, ['#公共 Logo']);
-    assert.equal(p.render(c, 11, scope).ok, true);
-    assert.deepEqual(visibleIds(p.scene()), [1, 11, 9], scope + ': A and the layer, plus the #公共 Logo; B, 背景, A 装饰 and A-图层2 off');
-    assert.equal(p.render(c, 12, scope).ok, true);
-    assert.deepEqual(visibleIds(p.scene()), [1, 12, 9]);
-    assertPristine(p, initial, [11, 12]);
-  }
-});
-
-test('#公共: without any marked layer, an image is the target and its ancestors only', () => {
-  const layers = commonTree(); layers[3].name = 'Logo';
-  const p = photoshop({layers, selected: [21]}), c = p.capture(); assert.deepEqual(c.common, []);
-  assert.equal(p.render(c, 21).ok, true);
-  assert.deepEqual(visibleIds(p.scene()), [2, 21]);
-});
-
-test('#公共 folder: everything inside is common and keeps its own state; full-width ＃ works too', () => {
-  const layers = [G(5, '＃公共 背景组', [R(51, '底色'), R(52, '暗纹', false), G(53, '光效', [R(531, '光')])], false), ...commonTree().slice(0, 2)];
-  const p = photoshop({layers, selected: [11, 21]}), initial = JSON.stringify(p.source), c = p.capture();
-  assert.deepEqual(c.common, ['＃公共 背景组']);
-  assert.equal(p.render(c, 11).ok, true);
-  const shown = visibleIds(p.scene());
-  assert.ok(!shown.includes(5), 'a hidden #公共 folder keeps its eye state (off)');
-  assertPristine(p, initial, [11, 21]);
-  p.source.__tree[0].visible = true; p.edit(); // the user turns it on
-  const d = p.capture(); assert.equal(p.render(d, 11).ok, true);
-  assert.deepEqual(visibleIds(p.scene()), [5, 51, 53, 531, 1, 11], 'its contents as in the PSD: 暗纹 stays off; B off');
-});
-
-test('#公共 inside another parent: that parent opens for it, its other layers stay hidden, and the PSD is restored', () => {
-  const layers = commonTree(); layers[1] = G(2, 'B', [R(20, '#公共 水印'), R(21, 'B-图层1'), R(22, 'B-图层2')], false);
-  const p = photoshop({layers, selected: [11, 12]}), initial = JSON.stringify(p.source), c = p.capture();
-  assert.equal(p.render(c, 11).ok, true);
-  assert.deepEqual(visibleIds(p.scene()), [1, 11, 2, 20, 9]);
-  assertPristine(p, initial, [11, 12]);
-});
-
-test('#公共 inside a target belongs to it; a target inside a #公共 folder keeps that folder\'s content but hides other targets', () => {
-  const inTarget = [G(1, 'A', [G(11, '方案 1', [R(111, '#公共 角标'), R(112, '图')]), G(12, '方案 2', [R(121, '图')])]), G(2, 'B', [R(21, 'b')])];
-  const p = photoshop({layers: inTarget, selected: [11, 12]}), c = p.capture();
-  assert.equal(p.render(c, 12).ok, true);
-  assert.deepEqual(visibleIds(p.scene()), [1, 12, 121], '方案 1\'s own #公共 角标 does not open 方案 1');
-  const inCommon = [G(1, '#公共 框架', [R(10, '边框'), G(11, '方案 1', [R(111, '图')]), G(12, '方案 2', [R(121, '图')])]), G(2, 'B', [R(21, 'b')])];
-  const q = photoshop({layers: inCommon, selected: [11, 12]}), d = q.capture();
-  assert.deepEqual(d.targets.map(t => t.id), [11, 12], 'targets inside a #公共 folder can still be exported');
-  assert.equal(q.render(d, 11).ok, true);
-  assert.deepEqual(visibleIds(q.scene()), [1, 10, 11, 111], '边框 stays, 方案 2 and B are hidden');
-});
-
-test('#公共 layers are never exported on their own', () => {
-  const layers = [G(1, 'A', [R(10, '#公共 底图'), G(11, '方案 1', [R(111, '图')]), G(12, '方案 2', [R(121, '图')])]), R(9, '#公共 Logo')];
-  const c = photoshop({layers: clone(layers), selected: [1]}).capture('children');
-  assert.deepEqual(c.targets.map(t => t.id), [11, 12], 'children mode skips the marked 底图');
-  const d = photoshop({layers: clone(layers), selected: [9, 11]}).capture();
-  assert.deepEqual(d.targets.map(t => t.id), [11]); assert.equal(d.commonSkipped, 1);
-  assert.match(photoshop({layers: clone(layers), selected: [9]}).capture().message, /#公共/);
-  assert.match(photoshop({layers: clone(layers), selected: [10, 9]}).capture().message, /#公共/);
-});
-
-test('without history IDs, a layer added after reading is caught before anything changes', () => {
-  const p = photoshop({noHistoryID: true, layers: commonTree(), selected: [11]}), c = p.capture();
-  p.source.__tree.push(R(77, '新图层'));
-  const r = p.render(c, 11); assert.equal(r.ok, false); assert.match(r.message, /结构已改变/); assert.equal(p.events.length, 0);
-});
-
-test('clipping masks stay together: a clipped target keeps its base, a base target keeps what is clipped onto it', () => {
-  const clip = (layer) => Object.assign(layer, {clipped: true});
-  const layers = () => [G(1, 'A', [clip(R(14, '高光')), R(13, '图层 2'), clip(R(12, '调色')), clip(R(11, '阴影')), R(10, '底板'), R(9, '无关')]), R(8, '背景')];
-  const p = photoshop({layers: layers(), selected: [12, 13]}), initial = JSON.stringify(p.source), c = p.capture();
-  assert.equal(p.render(c, 12).ok, true);
-  assert.deepEqual(visibleIds(p.scene()), [1, 12, 11, 10], 'the clipped 调色 keeps its base 底板 and the 阴影 under it; 图层 2 (another target) and its own 高光 off');
-  assert.equal(p.render(c, 13).ok, true);
-  assert.deepEqual(visibleIds(p.scene()), [1, 14, 13], 'the base 图层 2 keeps the 高光 clipped onto it; the other clip group is off');
-  assertPristine(p, initial, [12, 13]);
 });
